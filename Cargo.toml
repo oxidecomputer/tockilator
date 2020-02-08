@@ -1,9 +1,14 @@
 [package]
 name = "tockilator"
 version = "0.1.0"
-authors = ["Adam H. Leventhal <adam.leventhal@gmail.com>"]
+authors = ["Adam H. Leventhal <ahl@oxide.computer>"]
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+# riscv-disasm = {git = "https://github.com/laanwj/rust-riscv-disasm" }
+disc-v = {path = "../disc-v"}
+hex = "0.4.0"
+clap = "2.33.0"
+goblin = "0.2.0"
