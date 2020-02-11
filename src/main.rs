@@ -30,8 +30,14 @@ fn dump(state: &TockilatorState) -> Result<(), Box<dyn Error>> {
         state.time,
         state.cycle,
         state.pc,
-        format!("{:0width$x}", state.inst.inst,
-            width = match state.inst.inst & 0b11 { 0b11 => 8, _ => 4 }),
+        format!(
+            "{:0width$x}",
+            state.inst.inst,
+            width = match state.inst.inst & 0b11 {
+                0b11 => 8,
+                _ => 4,
+            }
+        ),
         format!("{:10} {}", asmop, asmarg),
         "",
         match state.inst.op {

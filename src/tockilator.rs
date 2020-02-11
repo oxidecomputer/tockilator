@@ -9,10 +9,10 @@ use rustc_demangle::demangle;
 
 #[derive(Debug)]
 pub struct Tockilator {
-    symbols: BTreeMap<u64, (String, u64)>,  // ELF symbols
-    regs: [u32; TOCKILATOR_NREGS],          // current register state
+    symbols: BTreeMap<u64, (String, u64)>, // ELF symbols
+    regs: [u32; TOCKILATOR_NREGS],         // current register state
     stack: Vec<u32>,
-} 
+}
 
 #[derive(Debug)]
 pub struct TockilatorSymbol<'a> {
@@ -23,36 +23,38 @@ pub struct TockilatorSymbol<'a> {
 
 #[derive(Debug)]
 pub struct TockilatorState<'a> {
-    pub line: u64,                          // line in input
-    pub time: usize,                        // time
-    pub cycle: usize,                       // cycle count
-    pub pc: u32,                            // program counter
+    pub line: u64,                                // line in input
+    pub time: usize,                              // time
+    pub cycle: usize,                             // cycle count
+    pub pc: u32,                                  // program counter
     pub symbol: Option<&'a TockilatorSymbol<'a>>, // symbol for pc, if any
-    pub inst: &'a rv_decode,                // instruction decoded
-    pub regs: &'a[u32; TOCKILATOR_NREGS],   // registers
-    pub iasm: &'a str,                      // instruction, as disp. by Verilator
-    pub effects: &'a str,                   // effects, as disp. by Verilator
-    pub stack: &'a Vec<u32>,                // stack 
+    pub inst: &'a rv_decode,                      // instruction decoded
+    pub regs: &'a [u32; TOCKILATOR_NREGS],        // registers
+    pub iasm: &'a str,    // instruction, as disp. by Verilator
+    pub effects: &'a str, // effects, as disp. by Verilator
+    pub stack: &'a Vec<u32>, // stack
 }
 
 #[derive(Debug)]
 pub struct TockilatorError {
-    errmsg: String
+    errmsg: String,
 }
 
-use std::fs;
-use std::fs::File;
+use disc_v::*;
+use goblin::Object;
 use std::collections::BTreeMap;
-use std::io::BufRead;
-use std::io::BufReader;
 use std::error::Error;
 use std::fmt;
-use goblin::Object;
-use disc_v::*;
+use std::fs;
+use std::fs::File;
+use std::io::BufRead;
+use std::io::BufReader;
 
 impl TockilatorError {
     fn new(msg: &str) -> TockilatorError {
-        TockilatorError { errmsg: msg.to_string() }
+        TockilatorError {
+            errmsg: msg.to_string(),
+        }
     }
 }
 
@@ -68,9 +70,9 @@ impl Error for TockilatorError {
     }
 }
 
-fn parse_verilator_line(line: &str) ->
-    Option<(usize, usize, u32, u32, &str, &str)>
-{
+fn parse_verilator_line(
+    line: &str,
+) -> Option<(usize, usize, u32, u32, &str, &str)> {
     let mut fields = line.match_indices("\t");
 
     let time = fields.next()?.0;
@@ -83,28 +85,28 @@ fn parse_verilator_line(line: &str) ->
     Some((
         match usize::from_str_radix(&line[..time].trim(), 10) {
             Ok(time) => time,
-            Err(_err) => return None
+            Err(_err) => return None,
         },
         match usize::from_str_radix(&line[time + 1..cycle].trim(), 10) {
             Ok(cycle) => cycle,
-            Err(_err) => return None
+            Err(_err) => return None,
         },
         match u32::from_str_radix(&line[cycle + 1..pc].trim(), 0x10) {
             Ok(pc) => pc,
-            Err(_err) => return None
+            Err(_err) => return None,
         },
         match u32::from_str_radix(&line[pc + 1..ibin].trim(), 0x10) {
             Ok(ibin) => ibin,
-            Err(_err) => return None
+            Err(_err) => return None,
         },
         &line[ibin + 1..iasm].trim(),
         &line[iasm + 1..].trim(),
     ))
 }
 
-fn parse_verilator_effects(effects: &str)
-    -> Result<Option<(usize, u32)>, Box<dyn Error>>
-{
+fn parse_verilator_effects(
+    effects: &str,
+) -> Result<Option<(usize, u32)>, Box<dyn Error>> {
     let e: Vec<&str> = effects
         .split(" ")
         .filter(|eff| {
@@ -116,7 +118,8 @@ fn parse_verilator_effects(effects: &str)
                 assert!(eff.find(":").is_some());
                 false
             }
-        }).collect();
+        })
+        .collect();
 
     if e.len() == 0 {
         return Ok(None);
@@ -128,7 +131,7 @@ fn parse_verilator_effects(effects: &str)
 
     let eff = e[0];
     let eq = match eff.find("=0x") {
-        Some(eq) => { eq },
+        Some(eq) => eq,
         None => {
             return Err(Box::new(TockilatorError::new("bad effect value")));
         }
@@ -149,7 +152,7 @@ fn parse_verilator_effects(effects: &str)
 }
 
 impl Tockilator {
-    fn err<T>(&self, msg: &str) -> Result<T, Box<dyn Error>>  {
+    fn err<T>(&self, msg: &str) -> Result<T, Box<dyn Error>> {
         Err(Box::new(TockilatorError::new(msg)))
     }
 
@@ -165,12 +168,12 @@ impl Tockilator {
         let buffer = match fs::read(obj) {
             Err(err) => {
                 return self.err(&format!("failed to read: {}: {}", obj, err));
-            },
-            Ok(k) => { k }
+            }
+            Ok(k) => k,
         };
 
         let elf = match Object::parse(&buffer)? {
-            Object::Elf(e) => { e },
+            Object::Elf(e) => e,
             _ => {
                 return self.err(&format!("unrecognized ELF object: {}", obj));
             }
@@ -182,34 +185,38 @@ impl Tockilator {
             }
 
             let name = match elf.strtab.get(sym.st_name) {
-                Some(n) => { n? },
+                Some(n) => n?,
                 None => {
-                    return self.err(&format!("bad symbol in object {}: {}", 
-                        obj, sym.st_name));
+                    return self.err(&format!(
+                        "bad symbol in object {}: {}",
+                        obj, sym.st_name
+                    ));
                 }
             };
 
-            self.symbols.insert(sym.st_value, (String::from(name), sym.st_size));
+            self.symbols
+                .insert(sym.st_value, (String::from(name), sym.st_size));
         }
 
         Ok(())
     }
 
-    fn trace(&mut self, source: &mut std::io::BufReader<std::fs::File>,
-        callback: fn(&TockilatorState) -> Result<(), Box<dyn Error>>)
-        -> Result<(), Box<dyn Error>>
-    {
+    fn trace(
+        &mut self,
+        source: &mut std::io::BufReader<std::fs::File>,
+        callback: fn(&TockilatorState) -> Result<(), Box<dyn Error>>,
+    ) -> Result<(), Box<dyn Error>> {
         let mut lineno = 2;
         let mut lines = source.lines();
 
         let _header = match lines.next() {
-            Some(header) => { header }
-            None => { return self.err("zero-length input") }
+            Some(header) => header,
+            None => return self.err("zero-length input"),
         };
 
         for line in lines {
             let l = match line {
-                Ok(ll) => ll, 
+                Ok(ll) => ll,
                 Err(_err) => {
                     return self.err(&format!("I/O error on line {}", lineno));
                 }
@@ -218,7 +225,8 @@ impl Tockilator {
             let res = match parse_verilator_line(&l) {
                 Some(res) => res,
                 None => {
-                    return self.err(&format!("invalid input on line {}", lineno));
+                    return self
+                        .err(&format!("invalid input on line {}", lineno));
                 }
             };
 
@@ -226,12 +234,16 @@ impl Tockilator {
 
             match parse_verilator_effects(effects) {
                 Ok(val) => match val {
-                    None => {},
-                    Some(effect) => { self.regs[effect.0] = effect.1; }
+                    None => {}
+                    Some(effect) => {
+                        self.regs[effect.0] = effect.1;
+                    }
                 },
                 Err(err) => {
-                    return self.err(&format!("invalid effect on line {}: {}",
-                        lineno, err));
+                    return self.err(&format!(
+                        "invalid effect on line {}: {}",
+                        lineno, err
+                    ));
                 }
             };
 
@@ -240,21 +252,18 @@ impl Tockilator {
              */
             let inst = decode_inst(rv_isa::rv32, pc as u64, ibin as u64);
 
-            let mut symbol: Option<&TockilatorSymbol> = None;
-            let tocksym;
+            let mut symbol: Option<TockilatorSymbol> = None;
             let dem;
 
             if let Some(sym) = self.symbols.range(..=pc as u64).next_back() {
                 if (pc as u64) < *sym.0 + (sym.1).1 {
                     dem = demangle(&(sym.1).0).to_string();
 
-                    tocksym = TockilatorSymbol {
+                    symbol = Some(TockilatorSymbol {
                         addr: *sym.0 as u32,
                         name: &(sym.1).0,
                         demangled: &dem,
-                    };
-
-                    symbol = Some(&tocksym);
+                    });
                 }
             }
 
@@ -263,7 +272,7 @@ impl Tockilator {
                 time: time,
                 cycle: cycle,
                 pc: pc,
-                symbol: symbol,
+                symbol: symbol.as_ref(),
                 inst: &inst,
                 iasm: &iasm,
                 regs: &self.regs,
@@ -281,17 +290,17 @@ impl Tockilator {
                 _ => (),
             }
 
-
             lineno += 1;
         }
 
         Ok(())
     }
 
-    pub fn tracefile(&mut self, file: &str,
-        callback: fn(&TockilatorState) -> Result<(), Box<dyn Error>>)
-        -> Result<(), Box<dyn Error>>
-    {
+    pub fn tracefile(
+        &mut self,
+        file: &str,
+        callback: fn(&TockilatorState) -> Result<(), Box<dyn Error>>,
+    ) -> Result<(), Box<dyn Error>> {
         let mut file = BufReader::new(File::open(file)?);
         self.trace(&mut file, callback)
     }
@@ -303,47 +312,71 @@ mod tests {
 
     #[test]
     fn parse_verilator_basic() {
-        let res = parse_verilator_line(r##" 22	         6	00008080	0080006f	jal	x0,8088	  x0=0x00000000"##);
-        assert_eq!(res,
-            Some((22, 6, 32896, 0x80006f, "jal\tx0,8088", "x0=0x00000000")));
+        let res = parse_verilator_line(
+            r##" 22	         6	00008080	0080006f	jal	x0,8088	  x0=0x00000000"##,
+        );
+        assert_eq!(
+            res,
+            Some((22, 6, 32896, 0x80006f, "jal\tx0,8088", "x0=0x00000000"))
+        );
     }
 
     #[test]
     fn parse_verilator_longer() {
-        let res = parse_verilator_line(r##" 102	        46	000080e2	0002a023	sw	x0,0(x5)	  x5:0x10000000  x0:0x00000000 PA:0x10000000 store:0x00000000 load:0x00000000"##);
-        assert_eq!(res,
-            Some((102, 46, 32994, 0x2a023, "sw\tx0,0(x5)",
-                "x5:0x10000000  x0:0x00000000 PA:0x10000000 store:0x00000000 load:0x00000000")));
+        let res = parse_verilator_line(
+            r##" 102	        46	000080e2	0002a023	sw	x0,0(x5)	  x5:0x10000000  x0:0x00000000 PA:0x10000000 store:0x00000000 load:0x00000000"##,
+        );
+        assert_eq!(
+            res,
+            Some((
+                102,
+                46,
+                32994,
+                0x2a023,
+                "sw\tx0,0(x5)",
+                "x5:0x10000000  x0:0x00000000 PA:0x10000000 store:0x00000000 load:0x00000000"
+            ))
+        );
     }
 
     #[test]
     fn parse_verilator_badtime() {
-        let res = parse_verilator_line(r##" iambad	         6	00008080	0080006f	jal	x0,8088	  x0=0x00000000"##);
+        let res = parse_verilator_line(
+            r##" iambad	         6	00008080	0080006f	jal	x0,8088	  x0=0x00000000"##,
+        );
         assert_eq!(res, None);
     }
 
     #[test]
     fn parse_verilator_badcycle() {
-        let res = parse_verilator_line(r##" 22	       bad	00008080	0080006f	jal	x0,8088	  x0=0x00000000"##);
+        let res = parse_verilator_line(
+            r##" 22	       bad	00008080	0080006f	jal	x0,8088	  x0=0x00000000"##,
+        );
         assert_eq!(res, None);
     }
 
     #[test]
     fn parse_verilator_badpc() {
-        let res = parse_verilator_line(r##" 22	         6	badpc	0080006f	jal	x0,8088	  x0=0x00000000"##);
+        let res = parse_verilator_line(
+            r##" 22	         6	badpc	0080006f	jal	x0,8088	  x0=0x00000000"##,
+        );
         assert_eq!(res, None);
     }
 
     #[test]
     fn parse_effect_basic() {
-        let res = parse_verilator_effects(r##"x8:0x10000fb0 x10=0x10003c0c PA:0x10000f00 store:0x00000000"##);
+        let res = parse_verilator_effects(
+            r##"x8:0x10000fb0 x10=0x10003c0c PA:0x10000f00 store:0x00000000"##,
+        );
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), Some((10, 0x10003c0c)));
     }
 
     #[test]
     fn parse_effect_multiple() {
-        let res = parse_verilator_effects(r##"x8=0x10000fb0 x10=0x10003c0c PA:0x10000f00 store:0x00000000"##);
+        let res = parse_verilator_effects(
+            r##"x8=0x10000fb0 x10=0x10003c0c PA:0x10000f00 store:0x00000000"##,
+        );
         assert!(res.is_err());
     }
 
