@@ -54,10 +54,15 @@ fn main() -> Result<(), Box<dyn Error>> {
             Arg::with_name("elf")
                 .short("e")
                 .value_name("FILE")
-                .help("Sets a custom config file")
+                .help("import debug info from the specified ELF file")
                 .multiple(true)
                 .number_of_values(1)
                 .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("no-dwarf")
+                .short("D")
+                .help("Disable DWARF processing"),
         )
         .arg(Arg::with_name("tracefile").required(true).index(1))
         .get_matches();
@@ -66,7 +71,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if let Some(elfs) = matches.values_of("elf") {
         for elf in elfs {
-            tockilator.loadobj(elf)?;
+            tockilator.loadobj(
+                elf,
+                if matches.values_of("no-dwarf").is_some() {
+                    TockilatorLoadobjOptions::None
+                } else {
+                    TockilatorLoadobjOptions::LoadDwarfOrDie
+                },
+            )?;
         }
     }
 

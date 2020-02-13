@@ -2,14 +2,26 @@
  * Copyright 2020 Oxide Computer Company
  */
 
+use std::borrow;
+use std::collections::BTreeMap;
+use std::error::Error;
+use std::fmt;
+use std::fs;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::str;
+
+use disc_v::*;
+use goblin::Object;
+use rustc_demangle::demangle;
+
 const TOCKILATOR_NREGS: usize = 32;
 const TOCKILATOR_REGPREFIX: char = 'x';
-
-use rustc_demangle::demangle;
 
 #[derive(Debug)]
 pub struct Tockilator {
     symbols: BTreeMap<u64, (String, u64)>, // ELF symbols
+    shortnames: BTreeMap<String, String>,  // demangled names from DWARF
     regs: [u32; TOCKILATOR_NREGS],         // current register state
     stack: Vec<u32>,
 }
@@ -40,15 +52,13 @@ pub struct TockilatorError {
     errmsg: String,
 }
 
-use disc_v::*;
-use goblin::Object;
-use std::collections::BTreeMap;
-use std::error::Error;
-use std::fmt;
-use std::fs;
-use std::fs::File;
-use std::io::BufRead;
-use std::io::BufReader;
+#[derive(Debug)]
+#[allow(dead_code)]
+pub enum TockilatorLoadobjOptions {
+    LoadDwarf,
+    LoadDwarfOrDie,
+    None,
+}
 
 impl TockilatorError {
     fn new(msg: &str) -> TockilatorError {
@@ -159,12 +169,17 @@ impl Tockilator {
     pub fn new() -> Self {
         Tockilator {
             symbols: BTreeMap::new(),
+            shortnames: BTreeMap::new(),
             regs: [0; TOCKILATOR_NREGS],
             stack: vec![],
         }
     }
 
-    pub fn loadobj(&mut self, obj: &str) -> Result<(), Box<dyn Error>> {
+    pub fn loadobj(
+        &mut self,
+        obj: &str,
+        options: TockilatorLoadobjOptions,
+    ) -> Result<(), Box<dyn Error>> {
         let buffer = match fs::read(obj) {
             Err(err) => {
                 return self.err(&format!("failed to read: {}: {}", obj, err));
@@ -178,6 +193,16 @@ impl Tockilator {
                 return self.err(&format!("unrecognized ELF object: {}", obj));
             }
         };
+
+        match options {
+            TockilatorLoadobjOptions::LoadDwarf => {
+                let _ = self.loadobj_dwarf(&buffer, &elf);
+            }
+            TockilatorLoadobjOptions::LoadDwarfOrDie => {
+                self.loadobj_dwarf(&buffer, &elf)?;
+            }
+            TockilatorLoadobjOptions::None => (),
+        }
 
         for sym in elf.syms.iter() {
             if sym.st_name == 0 || sym.st_size == 0 {
@@ -199,6 +224,111 @@ impl Tockilator {
         }
 
         Ok(())
+    }
+
+    fn loadobj_dwarf(
+        &mut self,
+        buffer: &Vec<u8>,
+        elf: &goblin::elf::Elf,
+    ) -> Result<(), Box<dyn Error>> {
+        let endian = gimli::RunTimeEndian::Little;
+
+        let load_section =
+            |id: gimli::SectionId| -> Result<borrow::Cow<[u8]>, gimli::Error> {
+                let sec_result = &elf
+                    .section_headers
+                    .iter()
+                    .filter(|sh| {
+                        if let Some(Ok(name)) = elf.shdr_strtab.get(sh.sh_name)
+                        {
+                            name == id.name()
+                        } else {
+                            false
+                        }
+                    })
+                    .next();
+                if let Some(sec) = sec_result {
+                    return Ok(borrow::Cow::Borrowed(
+                        buffer
+                            .get(
+                                sec.sh_offset as usize
+                                    ..(sec.sh_offset + sec.sh_size) as usize,
+                            )
+                            .unwrap(),
+                    ));
+                }
+                Ok(borrow::Cow::Borrowed(&[][..]))
+            };
+        let load_section_sup = |_| Ok(borrow::Cow::Borrowed(&[][..]));
+        // Load all of the sections.
+        let dwarf_cow = gimli::Dwarf::load(&load_section, &load_section_sup)?;
+        // Borrow a `Cow<[u8]>` to create an `EndianSlice`.
+        let borrow_section: &dyn for<'a> Fn(
+            &'a borrow::Cow<[u8]>,
+        ) -> gimli::EndianSlice<
+            'a,
+            gimli::RunTimeEndian,
+        > = &|section| gimli::EndianSlice::new(&*section, endian);
+
+        // Create `EndianSlice`s for all of the sections.
+        let dwarf = dwarf_cow.borrow(&borrow_section);
+        // Iterate over the compilation units.
+        let mut iter = dwarf.units();
+        while let Some(header) = iter.next()? {
+            let unit = dwarf.unit(header)?;
+            // Iterate over the Debugging Information Entries (DIEs) in the unit.
+            let mut entries = unit.entries();
+            while let Some((_, entry)) = entries.next_dfs()? {
+                let mut name = None;
+                let mut linkage_name = None;
+
+                if entry.tag() != gimli::constants::DW_TAG_subprogram {
+                    continue;
+                }
+                // Iterate over the attributes in the DIE.
+                let mut attrs = entry.attrs();
+                while let Some(attr) = attrs.next()? {
+                    match attr.name() {
+                        gimli::constants::DW_AT_linkage_name => {
+                            linkage_name = Some(attr.value())
+                        }
+                        gimli::constants::DW_AT_name => {
+                            name = Some(attr.value())
+                        }
+                        _ => (),
+                    }
+                }
+                if let Some(nn) = self.dwarf_name(&dwarf, name) {
+                    if let Some(ln) = self.dwarf_name(&dwarf, linkage_name) {
+                        if ln != nn {
+                            self.shortnames
+                                .insert(String::from(ln), String::from(nn));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn dwarf_name<'a>(
+        &mut self,
+        dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::RunTimeEndian>>,
+        value: Option<
+            gimli::AttributeValue<gimli::EndianSlice<gimli::RunTimeEndian>>,
+        >,
+    ) -> Option<&'a str> {
+        match value? {
+            gimli::AttributeValue::DebugStrRef(strref) => {
+                if let Ok(dstring) = dwarf.debug_str.get_str(strref) {
+                    if let Ok(ddstring) = str::from_utf8(dstring.slice()) {
+                        return Some(ddstring);
+                    }
+                }
+            }
+            _ => (),
+        }
+        None
     }
 
     fn trace(
@@ -257,12 +387,24 @@ impl Tockilator {
 
             if let Some(sym) = self.symbols.range(..=pc as u64).next_back() {
                 if (pc as u64) < *sym.0 + (sym.1).1 {
-                    dem = demangle(&(sym.1).0).to_string();
+                    let name = &(sym.1).0;
+                    let sname;
+
+                    /*
+                     * Check to see if we have a short name from DWARF;
+                     * otherwise run it through the demangler.
+                     */
+                    if let Some(shortname) = self.shortnames.get(name) {
+                        sname = shortname;
+                    } else {
+                        dem = demangle(name).to_string();
+                        sname = &dem;
+                    }
 
                     symbol = Some(TockilatorSymbol {
                         addr: *sym.0 as u32,
                         name: &(sym.1).0,
-                        demangled: &dem,
+                        demangled: sname,
                     });
                 }
             }
