@@ -73,7 +73,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         for elf in elfs {
             tockilator.loadobj(
                 elf,
-                if matches.values_of("no-dwarf").is_some() {
+                if matches.is_present("no-dwarf") {
                     TockilatorLoadobjOptions::None
                 } else {
                     TockilatorLoadobjOptions::LoadDwarfOrDie

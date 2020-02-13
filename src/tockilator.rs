@@ -235,7 +235,7 @@ impl Tockilator {
 
         let load_section =
             |id: gimli::SectionId| -> Result<borrow::Cow<[u8]>, gimli::Error> {
-                let sec_result = &elf
+                let sec_result = elf
                     .section_headers
                     .iter()
                     .filter(|sh| {
@@ -262,16 +262,9 @@ impl Tockilator {
         let load_section_sup = |_| Ok(borrow::Cow::Borrowed(&[][..]));
         // Load all of the sections.
         let dwarf_cow = gimli::Dwarf::load(&load_section, &load_section_sup)?;
-        // Borrow a `Cow<[u8]>` to create an `EndianSlice`.
-        let borrow_section: &dyn for<'a> Fn(
-            &'a borrow::Cow<[u8]>,
-        ) -> gimli::EndianSlice<
-            'a,
-            gimli::RunTimeEndian,
-        > = &|section| gimli::EndianSlice::new(&*section, endian);
-
-        // Create `EndianSlice`s for all of the sections.
-        let dwarf = dwarf_cow.borrow(&borrow_section);
+        // Borrow a `Cow[u8]` to create `EndianSlice`s for all of the sections.
+        let dwarf = dwarf_cow
+            .borrow(|section| gimli::EndianSlice::new(&*section, endian));
         // Iterate over the compilation units.
         let mut iter = dwarf.units();
         while let Some(header) = iter.next()? {
@@ -279,31 +272,33 @@ impl Tockilator {
             // Iterate over the Debugging Information Entries (DIEs) in the unit.
             let mut entries = unit.entries();
             while let Some((_, entry)) = entries.next_dfs()? {
-                let mut name = None;
-                let mut linkage_name = None;
-
                 if entry.tag() != gimli::constants::DW_TAG_subprogram {
                     continue;
                 }
+
+                let mut name = None;
+                let mut linkage_name = None;
+
                 // Iterate over the attributes in the DIE.
                 let mut attrs = entry.attrs();
                 while let Some(attr) = attrs.next()? {
                     match attr.name() {
                         gimli::constants::DW_AT_linkage_name => {
-                            linkage_name = Some(attr.value())
+                            linkage_name = Some(attr.value());
                         }
                         gimli::constants::DW_AT_name => {
-                            name = Some(attr.value())
+                            name = Some(attr.value());
                         }
                         _ => (),
                     }
                 }
-                if let Some(nn) = self.dwarf_name(&dwarf, name) {
-                    if let Some(ln) = self.dwarf_name(&dwarf, linkage_name) {
-                        if ln != nn {
-                            self.shortnames
-                                .insert(String::from(ln), String::from(nn));
-                        }
+                if let (Some(nn), Some(ln)) = (
+                    self.dwarf_name(&dwarf, name),
+                    self.dwarf_name(&dwarf, linkage_name),
+                ) {
+                    if ln != nn {
+                        self.shortnames
+                            .insert(String::from(ln), String::from(nn));
                     }
                 }
             }
@@ -388,18 +383,18 @@ impl Tockilator {
             if let Some(sym) = self.symbols.range(..=pc as u64).next_back() {
                 if (pc as u64) < *sym.0 + (sym.1).1 {
                     let name = &(sym.1).0;
-                    let sname;
 
                     /*
                      * Check to see if we have a short name from DWARF;
                      * otherwise run it through the demangler.
                      */
-                    if let Some(shortname) = self.shortnames.get(name) {
-                        sname = shortname;
-                    } else {
-                        dem = demangle(name).to_string();
-                        sname = &dem;
-                    }
+                    let sname =
+                        if let Some(shortname) = self.shortnames.get(name) {
+                            shortname
+                        } else {
+                            dem = demangle(name).to_string();
+                            &dem
+                        };
 
                     symbol = Some(TockilatorSymbol {
                         addr: *sym.0 as u32,
