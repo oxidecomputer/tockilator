@@ -2,8 +2,8 @@
  * Copyright 2020 Oxide Computer Company
  */
 
-use std::borrow;
 use std::collections::BTreeMap;
+use std::convert::Infallible;
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -80,37 +80,37 @@ impl Error for TockilatorError {
     }
 }
 
+/// Parse Ibex Trace output from Verilator into our state fields.
+///
+/// The trace output from the Ibex verilator simulator is tab-delimited, but
+/// contains a variable number of columns:
+///
+/// `TIME \t CYCLE \t PC \t BINARY_INSTRUCTION \t ASM (\t ARGS)? \t EFFECTS`
+///
+/// And so this parser is slightly more complex than you might expect for
+/// basic TSV.
 fn parse_verilator_line(
     line: &str,
 ) -> Option<(usize, usize, u32, u32, &str, &str)> {
     let mut fields = line.match_indices("\t");
 
-    let time = fields.next()?.0;
-    let cycle = fields.next()?.0;
-    let pc = fields.next()?.0;
-    let ibin = fields.next()?.0;
-    let mut iasm = fields.next()?.0;
-    fields.next().map(|operands| iasm = operands.0);
+    let time = ..fields.next()?.0;
+    let cycle = time.end + 1..fields.next()?.0;
+    let pc = cycle.end + 1..fields.next()?.0;
+    let ibin = pc.end + 1..fields.next()?.0;
+    let iasm = {
+        let end_or_separator = fields.next()?;
+        // If there's another tab, take it instead, but tolerate absence.
+        ibin.end + 1..fields.next().unwrap_or(end_or_separator).0
+    };
 
     Some((
-        match usize::from_str_radix(&line[..time].trim(), 10) {
-            Ok(time) => time,
-            Err(_err) => return None,
-        },
-        match usize::from_str_radix(&line[time + 1..cycle].trim(), 10) {
-            Ok(cycle) => cycle,
-            Err(_err) => return None,
-        },
-        match u32::from_str_radix(&line[cycle + 1..pc].trim(), 0x10) {
-            Ok(pc) => pc,
-            Err(_err) => return None,
-        },
-        match u32::from_str_radix(&line[pc + 1..ibin].trim(), 0x10) {
-            Ok(ibin) => ibin,
-            Err(_err) => return None,
-        },
-        &line[ibin + 1..iasm].trim(),
-        &line[iasm + 1..].trim(),
+        usize::from_str_radix(&line[time].trim(), 10).ok()?,
+        usize::from_str_radix(&line[cycle].trim(), 10).ok()?,
+        u32::from_str_radix(&line[pc].trim(), 0x10).ok()?,
+        u32::from_str_radix(&line[ibin].trim(), 0x10).ok()?,
+        &line[iasm.clone()].trim(),
+        &line[iasm.end + 1..].trim(),
     ))
 }
 
@@ -231,10 +231,11 @@ impl Tockilator {
         buffer: &Vec<u8>,
         elf: &goblin::elf::Elf,
     ) -> Result<(), Box<dyn Error>> {
-        let endian = gimli::RunTimeEndian::Little;
-
-        let load_section =
-            |id: gimli::SectionId| -> Result<borrow::Cow<[u8]>, gimli::Error> {
+        // Load all of the sections. This "load" operation just gets the data in
+        // RAM -- since we've already loaded the Elf file, this can't fail.
+        let dwarf = gimli::Dwarf::<&[u8]>::load::<_, _, Infallible>(
+            // Load the normal Dwarf section(s) from our Elf image.
+            |id| {
                 let sec_result = elf
                     .section_headers
                     .iter()
@@ -247,24 +248,21 @@ impl Tockilator {
                         }
                     })
                     .next();
-                if let Some(sec) = sec_result {
-                    return Ok(borrow::Cow::Borrowed(
-                        buffer
-                            .get(
-                                sec.sh_offset as usize
-                                    ..(sec.sh_offset + sec.sh_size) as usize,
-                            )
-                            .unwrap(),
-                    ));
-                }
-                Ok(borrow::Cow::Borrowed(&[][..]))
-            };
-        let load_section_sup = |_| Ok(borrow::Cow::Borrowed(&[][..]));
-        // Load all of the sections.
-        let dwarf_cow = gimli::Dwarf::load(&load_section, &load_section_sup)?;
-        // Borrow a `Cow[u8]` to create `EndianSlice`s for all of the sections.
-        let dwarf = dwarf_cow
-            .borrow(|section| gimli::EndianSlice::new(&*section, endian));
+                Ok(sec_result
+                    .map(|sec| {
+                        let offset = sec.sh_offset as usize;
+                        let size = sec.sh_size as usize;
+                        buffer.get(offset..offset + size).unwrap()
+                    })
+                    .unwrap_or(&[]))
+            },
+            // We don't have a supplemental object file.
+            |_| Ok(&[]),
+        )?;
+        // Borrow all sections wrapped in EndianSlices
+        let dwarf = dwarf.borrow(|section| {
+            gimli::EndianSlice::new(section, gimli::LittleEndian)
+        });
         // Iterate over the compilation units.
         let mut iter = dwarf.units();
         while let Some(header) = iter.next()? {
@@ -308,9 +306,9 @@ impl Tockilator {
 
     fn dwarf_name<'a>(
         &mut self,
-        dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::RunTimeEndian>>,
+        dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>>,
         value: Option<
-            gimli::AttributeValue<gimli::EndianSlice<gimli::RunTimeEndian>>,
+            gimli::AttributeValue<gimli::EndianSlice<gimli::LittleEndian>>,
         >,
     ) -> Option<&'a str> {
         match value? {
