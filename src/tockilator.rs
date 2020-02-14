@@ -84,6 +84,10 @@ impl Error for TockilatorError {
     }
 }
 
+fn err<S: ToString>(msg: S) -> Box<dyn Error> {
+    Box::new(TockilatorError::from(msg.to_string()))
+}
+
 /// Parse Ibex Trace output from Verilator into our state fields.
 ///
 /// The trace output from the Ibex verilator simulator is tab-delimited, but
@@ -145,41 +149,35 @@ fn parse_verilator_effects(
     }
 
     if e.len() > 1 {
-        return Err(Box::new(TockilatorError::from("too many effects")));
+        return Err(err("too many effects"));
     }
 
     let eff = e[0];
-    let eq = eff
-        .find("=0x")
-        .ok_or_else(|| Box::new(TockilatorError::from("bad effect value")))?;
+    let eq = eff.find("=0x").ok_or_else(|| err("bad effect value"))?;
 
     if &eff[..1] != TOCKILATOR_REGPREFIX {
-        return Err(Box::new(TockilatorError::from("bad register name")));
+        return Err(err("bad register name"));
     }
 
     let reg = u32::from_str_radix(&eff[1..eq], 10)? as usize;
     let val = u32::from_str_radix(&eff[eq + 1 + "0x".len()..], 0x10)?;
 
     if reg >= TOCKILATOR_NREGS {
-        return Err(Box::new(TockilatorError::from("invalid register")));
+        return Err(err("invalid register"));
     }
 
     Ok(Some((reg, val)))
 }
 
 impl Tockilator {
-    fn err<T, S: ToString>(&self, msg: S) -> Result<T, Box<dyn Error>> {
-        Err(Box::new(TockilatorError::from(msg.to_string())))
-    }
-
     pub fn loadobj(
         &mut self,
         obj: &str,
         options: TockilatorLoadobjOptions,
     ) -> Result<(), Box<dyn Error>> {
         let buffer = match fs::read(obj) {
-            Err(err) => {
-                return self.err(format!("failed to read: {}: {}", obj, err));
+            Err(e) => {
+                return Err(err(format!("failed to read: {}: {}", obj, e)));
             }
             Ok(k) => k,
         };
@@ -187,7 +185,7 @@ impl Tockilator {
         let elf = match Object::parse(&buffer)? {
             Object::Elf(e) => e,
             _ => {
-                return self.err(format!("unrecognized ELF object: {}", obj));
+                return Err(err(format!("unrecognized ELF object: {}", obj)));
             }
         };
 
@@ -209,10 +207,10 @@ impl Tockilator {
             let name = match elf.strtab.get(sym.st_name) {
                 Some(n) => n?,
                 None => {
-                    return self.err(format!(
+                    return Err(err(format!(
                         "bad symbol in object {}: {}",
                         obj, sym.st_name
-                    ));
+                    )));
                 }
             };
 
@@ -331,22 +329,24 @@ impl Tockilator {
 
         let _header = match lines.next() {
             Some(header) => header,
-            None => return self.err("zero-length input"),
+            None => return Err(err("zero-length input")),
         };
 
         for line in lines {
             let l = match line {
                 Ok(ll) => ll,
                 Err(_err) => {
-                    return self.err(format!("I/O error on line {}", lineno));
+                    return Err(err(format!("I/O error on line {}", lineno)));
                 }
             };
 
             let res = match parse_verilator_line(&l) {
                 Some(res) => res,
                 None => {
-                    return self
-                        .err(format!("invalid input on line {}", lineno));
+                    return Err(err(format!(
+                        "invalid input on line {}",
+                        lineno
+                    )));
                 }
             };
 
@@ -359,11 +359,11 @@ impl Tockilator {
                         self.regs[effect.0] = effect.1;
                     }
                 },
-                Err(err) => {
-                    return self.err(format!(
+                Err(e) => {
+                    return Err(err(format!(
                         "invalid effect on line {}: {}",
-                        lineno, err
-                    ));
+                        lineno, e
+                    )));
                 }
             };
 
