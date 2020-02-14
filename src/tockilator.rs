@@ -18,7 +18,7 @@ use rustc_demangle::demangle;
 const TOCKILATOR_NREGS: usize = 32;
 const TOCKILATOR_REGPREFIX: &'static str = "x";
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Tockilator {
     symbols: BTreeMap<u64, (String, u64)>, // ELF symbols
     shortnames: BTreeMap<String, String>,  // demangled names from DWARF
@@ -60,8 +60,8 @@ pub enum TockilatorLoadobjOptions {
     None,
 }
 
-impl TockilatorError {
-    fn new(msg: &str) -> TockilatorError {
+impl<'a> From<&'a str> for TockilatorError {
+    fn from(msg: &'a str) -> TockilatorError {
         TockilatorError {
             errmsg: msg.to_string(),
         }
@@ -141,23 +141,23 @@ fn parse_verilator_effects(
     }
 
     if e.len() > 1 {
-        return Err(Box::new(TockilatorError::new("too many effects")));
+        return Err(Box::new(TockilatorError::from("too many effects")));
     }
 
     let eff = e[0];
     let eq = eff
         .find("=0x")
-        .ok_or_else(|| Box::new(TockilatorError::new("bad effect value")))?;
+        .ok_or_else(|| Box::new(TockilatorError::from("bad effect value")))?;
 
     if &eff[..1] != TOCKILATOR_REGPREFIX {
-        return Err(Box::new(TockilatorError::new("bad register name")));
+        return Err(Box::new(TockilatorError::from("bad register name")));
     }
 
     let reg = u32::from_str_radix(&eff[1..eq], 10)? as usize;
     let val = u32::from_str_radix(&eff[eq + 1 + "0x".len()..], 0x10)?;
 
     if reg >= TOCKILATOR_NREGS {
-        return Err(Box::new(TockilatorError::new("invalid register")));
+        return Err(Box::new(TockilatorError::from("invalid register")));
     }
 
     Ok(Some((reg, val)))
@@ -165,16 +165,7 @@ fn parse_verilator_effects(
 
 impl Tockilator {
     fn err<T>(&self, msg: &str) -> Result<T, Box<dyn Error>> {
-        Err(Box::new(TockilatorError::new(msg)))
-    }
-
-    pub fn new() -> Self {
-        Tockilator {
-            symbols: BTreeMap::new(),
-            shortnames: BTreeMap::new(),
-            regs: [0; TOCKILATOR_NREGS],
-            stack: vec![],
-        }
+        Err(Box::new(TockilatorError::from(msg)))
     }
 
     pub fn loadobj(
