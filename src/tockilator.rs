@@ -80,37 +80,37 @@ impl Error for TockilatorError {
     }
 }
 
+/// Parse Ibex Trace output from Verilator into our state fields.
+///
+/// The trace output from the Ibex verilator simulator is tab-delimited, but
+/// contains a variable number of columns:
+///
+/// `TIME \t CYCLE \t PC \t BINARY_INSTRUCTION \t ASM (\t ARGS)? \t EFFECTS`
+///
+/// And so this parser is slightly more complex than you might expect for
+/// basic TSV.
 fn parse_verilator_line(
     line: &str,
 ) -> Option<(usize, usize, u32, u32, &str, &str)> {
     let mut fields = line.match_indices("\t");
 
-    let time = fields.next()?.0;
-    let cycle = fields.next()?.0;
-    let pc = fields.next()?.0;
-    let ibin = fields.next()?.0;
-    let mut iasm = fields.next()?.0;
-    fields.next().map(|operands| iasm = operands.0);
+    let time = ..fields.next()?.0;
+    let cycle = time.end + 1..fields.next()?.0;
+    let pc = cycle.end + 1..fields.next()?.0;
+    let ibin = pc.end + 1..fields.next()?.0;
+    let iasm = {
+        let end_or_separator = fields.next()?;
+        // If there's another tab, take it instead, but tolerate absence.
+        ibin.end + 1..fields.next().unwrap_or(end_or_separator).0
+    };
 
     Some((
-        match usize::from_str_radix(&line[..time].trim(), 10) {
-            Ok(time) => time,
-            Err(_err) => return None,
-        },
-        match usize::from_str_radix(&line[time + 1..cycle].trim(), 10) {
-            Ok(cycle) => cycle,
-            Err(_err) => return None,
-        },
-        match u32::from_str_radix(&line[cycle + 1..pc].trim(), 0x10) {
-            Ok(pc) => pc,
-            Err(_err) => return None,
-        },
-        match u32::from_str_radix(&line[pc + 1..ibin].trim(), 0x10) {
-            Ok(ibin) => ibin,
-            Err(_err) => return None,
-        },
-        &line[ibin + 1..iasm].trim(),
-        &line[iasm + 1..].trim(),
+        usize::from_str_radix(&line[time].trim(), 10).ok()?,
+        usize::from_str_radix(&line[cycle].trim(), 10).ok()?,
+        u32::from_str_radix(&line[pc].trim(), 0x10).ok()?,
+        u32::from_str_radix(&line[ibin].trim(), 0x10).ok()?,
+        &line[iasm.clone()].trim(),
+        &line[iasm.end + 1..].trim(),
     ))
 }
 
