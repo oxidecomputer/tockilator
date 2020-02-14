@@ -16,7 +16,7 @@ use goblin::Object;
 use rustc_demangle::demangle;
 
 const TOCKILATOR_NREGS: usize = 32;
-const TOCKILATOR_REGPREFIX: char = 'x';
+const TOCKILATOR_REGPREFIX: &'static str = "x";
 
 #[derive(Debug)]
 pub struct Tockilator {
@@ -117,6 +117,9 @@ fn parse_verilator_line(
 fn parse_verilator_effects(
     effects: &str,
 ) -> Result<Option<(usize, u32)>, Box<dyn Error>> {
+    // The trace format includes register state changes, but it also includes
+    // bits of state printed as an FYI. The state changes use an equals sign,
+    // while the FYIs use a colon.
     let e: Vec<&str> = effects
         .split(" ")
         .filter(|eff| {
@@ -125,6 +128,8 @@ fn parse_verilator_effects(
             } else if eff.find("=").is_some() {
                 true
             } else {
+                // If we start getting effects that *aren't* = or :, we want to
+                // find out:
                 assert!(eff.find(":").is_some());
                 false
             }
@@ -140,14 +145,11 @@ fn parse_verilator_effects(
     }
 
     let eff = e[0];
-    let eq = match eff.find("=0x") {
-        Some(eq) => eq,
-        None => {
-            return Err(Box::new(TockilatorError::new("bad effect value")));
-        }
-    };
+    let eq = eff
+        .find("=0x")
+        .ok_or_else(|| Box::new(TockilatorError::new("bad effect value")))?;
 
-    if (&eff[..1]).chars().next().unwrap() != TOCKILATOR_REGPREFIX {
+    if &eff[..1] != TOCKILATOR_REGPREFIX {
         return Err(Box::new(TockilatorError::new("bad register name")));
     }
 

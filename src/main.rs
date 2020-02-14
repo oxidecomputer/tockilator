@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .arg(Arg::with_name("tracefile").required(true).index(1))
         .get_matches();
 
-    let mut tockilator = Tockilator::new();
+    let mut tockilator = Tockilator::default();
 
     if let Some(elfs) = matches.values_of("elf") {
         for elf in elfs {
