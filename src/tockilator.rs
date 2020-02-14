@@ -294,48 +294,32 @@ impl Tockilator {
         source: &mut std::io::BufReader<std::fs::File>,
         callback: impl Fn(&TockilatorState) -> Result<(), Box<dyn Error>>,
     ) -> Result<(), Box<dyn Error>> {
-        let mut lineno = 2;
         let mut lines = source.lines();
 
-        let _header = match lines.next() {
-            Some(header) => header,
-            None => return Err(err("zero-length input")),
-        };
+        // Expect, but discard, header line.
+        lines.next().ok_or_else(|| err("zero-length input"))??;
 
-        for line in lines {
-            let l = match line {
-                Ok(ll) => ll,
-                Err(_err) => {
-                    return Err(err(format!("I/O error on line {}", lineno)));
-                }
-            };
+        // 1 to make lines 1-based, 1 to account for the header we skipped.
+        const OFFSET: usize = 2;
 
-            let res = match parse_verilator_line(&l) {
-                Some(res) => res,
-                None => {
-                    return Err(err(format!(
-                        "invalid input on line {}",
-                        lineno
-                    )));
-                }
-            };
+        for (lineno_zero, line) in lines.enumerate() {
+            let lineno = lineno_zero + OFFSET;
+            let l =
+                line.map_err(|_| err(format!("I/O error on line {}", lineno)))?;
+
+            let res = parse_verilator_line(&l).ok_or_else(|| {
+                err(format!("invalid input on line {}", lineno))
+            })?;
 
             let (time, cycle, pc, ibin, iasm, effects) = res;
 
-            match parse_verilator_effects(effects) {
-                Ok(val) => match val {
-                    None => {}
-                    Some(effect) => {
-                        self.regs[effect.0] = effect.1;
-                    }
-                },
-                Err(e) => {
-                    return Err(err(format!(
-                        "invalid effect on line {}: {}",
-                        lineno, e
-                    )));
-                }
-            };
+            let val = parse_verilator_effects(effects).map_err(|e| {
+                err(format!("invalid effect on line {}: {}", lineno, e))
+            })?;
+
+            if let Some((reg_no, value)) = val {
+                self.regs[reg_no] = value;
+            }
 
             /*
              * Now decode the instruction.
@@ -370,7 +354,7 @@ impl Tockilator {
             }
 
             callback(&TockilatorState {
-                line: lineno,
+                line: lineno as u64,
                 time: time,
                 cycle: cycle,
                 pc: pc,
@@ -391,8 +375,6 @@ impl Tockilator {
                 }
                 _ => (),
             }
-
-            lineno += 1;
         }
 
         Ok(())
