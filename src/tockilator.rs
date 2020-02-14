@@ -62,9 +62,13 @@ pub enum TockilatorLoadobjOptions {
 
 impl<'a> From<&'a str> for TockilatorError {
     fn from(msg: &'a str) -> TockilatorError {
-        TockilatorError {
-            errmsg: msg.to_string(),
-        }
+        msg.to_string().into()
+    }
+}
+
+impl From<String> for TockilatorError {
+    fn from(errmsg: String) -> TockilatorError {
+        TockilatorError { errmsg }
     }
 }
 
@@ -164,8 +168,8 @@ fn parse_verilator_effects(
 }
 
 impl Tockilator {
-    fn err<T>(&self, msg: &str) -> Result<T, Box<dyn Error>> {
-        Err(Box::new(TockilatorError::from(msg)))
+    fn err<T, S: ToString>(&self, msg: S) -> Result<T, Box<dyn Error>> {
+        Err(Box::new(TockilatorError::from(msg.to_string())))
     }
 
     pub fn loadobj(
@@ -175,7 +179,7 @@ impl Tockilator {
     ) -> Result<(), Box<dyn Error>> {
         let buffer = match fs::read(obj) {
             Err(err) => {
-                return self.err(&format!("failed to read: {}: {}", obj, err));
+                return self.err(format!("failed to read: {}: {}", obj, err));
             }
             Ok(k) => k,
         };
@@ -183,7 +187,7 @@ impl Tockilator {
         let elf = match Object::parse(&buffer)? {
             Object::Elf(e) => e,
             _ => {
-                return self.err(&format!("unrecognized ELF object: {}", obj));
+                return self.err(format!("unrecognized ELF object: {}", obj));
             }
         };
 
@@ -205,7 +209,7 @@ impl Tockilator {
             let name = match elf.strtab.get(sym.st_name) {
                 Some(n) => n?,
                 None => {
-                    return self.err(&format!(
+                    return self.err(format!(
                         "bad symbol in object {}: {}",
                         obj, sym.st_name
                     ));
@@ -334,7 +338,7 @@ impl Tockilator {
             let l = match line {
                 Ok(ll) => ll,
                 Err(_err) => {
-                    return self.err(&format!("I/O error on line {}", lineno));
+                    return self.err(format!("I/O error on line {}", lineno));
                 }
             };
 
@@ -342,7 +346,7 @@ impl Tockilator {
                 Some(res) => res,
                 None => {
                     return self
-                        .err(&format!("invalid input on line {}", lineno));
+                        .err(format!("invalid input on line {}", lineno));
                 }
             };
 
@@ -356,7 +360,7 @@ impl Tockilator {
                     }
                 },
                 Err(err) => {
-                    return self.err(&format!(
+                    return self.err(format!(
                         "invalid effect on line {}: {}",
                         lineno, err
                     ));
