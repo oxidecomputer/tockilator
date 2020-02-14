@@ -12,7 +12,7 @@ use std::io::{BufRead, BufReader};
 use std::str;
 
 use disc_v::*;
-use goblin::Object;
+use goblin::elf::Elf;
 use rustc_demangle::demangle;
 
 const TOCKILATOR_NREGS: usize = 32;
@@ -175,19 +175,12 @@ impl Tockilator {
         obj: &str,
         options: TockilatorLoadobjOptions,
     ) -> Result<(), Box<dyn Error>> {
-        let buffer = match fs::read(obj) {
-            Err(e) => {
-                return Err(err(format!("failed to read: {}: {}", obj, e)));
-            }
-            Ok(k) => k,
-        };
+        let buffer = fs::read(obj)
+            .map_err(|e| err(format!("failed to read: {}: {}", obj, e)))?;
 
-        let elf = match Object::parse(&buffer)? {
-            Object::Elf(e) => e,
-            _ => {
-                return Err(err(format!("unrecognized ELF object: {}", obj)));
-            }
-        };
+        let elf = Elf::parse(&buffer).map_err(|e| {
+            err(format!("unrecognized ELF object: {}: {}", e, obj))
+        })?;
 
         match options {
             TockilatorLoadobjOptions::LoadDwarf => {
