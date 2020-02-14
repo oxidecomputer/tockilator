@@ -320,7 +320,7 @@ impl Tockilator {
     fn trace(
         &mut self,
         source: &mut std::io::BufReader<std::fs::File>,
-        callback: fn(&TockilatorState) -> Result<(), Box<dyn Error>>,
+        callback: impl Fn(&TockilatorState) -> Result<(), Box<dyn Error>>,
     ) -> Result<(), Box<dyn Error>> {
         let mut lineno = 2;
         let mut lines = source.lines();
