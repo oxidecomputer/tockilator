@@ -45,7 +45,7 @@ pub struct TockilatorState<'a> {
     pub regs: &'a [u32; TOCKILATOR_NREGS],        // registers
     pub iasm: &'a str,    // instruction, as disp. by Verilator
     pub effects: &'a str, // effects, as disp. by Verilator
-    pub stack: &'a Vec<u32>, // stack
+    pub stack: &'a [u32], // stack
 }
 
 #[derive(Debug)]
@@ -217,7 +217,7 @@ impl Tockilator {
 
     fn loadobj_dwarf(
         &mut self,
-        buffer: &Vec<u8>,
+        buffer: &[u8],
         elf: &goblin::elf::Elf,
     ) -> Result<(), Box<dyn Error>> {
         // Load all of the sections. This "load" operation just gets the data in
