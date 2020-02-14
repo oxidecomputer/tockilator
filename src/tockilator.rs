@@ -2,6 +2,7 @@
  * Copyright 2020 Oxide Computer Company
  */
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::error::Error;
@@ -30,7 +31,7 @@ pub struct Tockilator {
 pub struct TockilatorSymbol<'a> {
     pub addr: u32,
     pub name: &'a str,
-    pub demangled: &'a str,
+    pub demangled: Cow<'a, str>,
 }
 
 #[derive(Debug)]
@@ -327,7 +328,6 @@ impl Tockilator {
             let inst = decode_inst(rv_isa::rv32, pc as u64, ibin as u64);
 
             let mut symbol: Option<TockilatorSymbol> = None;
-            let dem;
 
             if let Some(sym) = self.symbols.range(..=pc as u64).next_back() {
                 if (pc as u64) < *sym.0 + (sym.1).1 {
@@ -337,27 +337,26 @@ impl Tockilator {
                      * Check to see if we have a short name from DWARF;
                      * otherwise run it through the demangler.
                      */
-                    let sname =
+                    let demangled =
                         if let Some(shortname) = self.shortnames.get(name) {
-                            shortname
+                            shortname.into()
                         } else {
-                            dem = demangle(name).to_string();
-                            &dem
+                            demangle(name).to_string().into()
                         };
 
                     symbol = Some(TockilatorSymbol {
                         addr: *sym.0 as u32,
                         name: &(sym.1).0,
-                        demangled: sname,
+                        demangled,
                     });
                 }
             }
 
             callback(&TockilatorState {
                 line: lineno as u64,
-                time: time,
-                cycle: cycle,
-                pc: pc,
+                time,
+                cycle,
+                pc,
                 symbol: symbol.as_ref(),
                 inst: &inst,
                 iasm: &iasm,
