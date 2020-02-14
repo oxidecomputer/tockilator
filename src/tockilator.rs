@@ -2,7 +2,6 @@
  * Copyright 2020 Oxide Computer Company
  */
 
-use std::borrow;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
@@ -234,7 +233,7 @@ impl Tockilator {
         let endian = gimli::RunTimeEndian::Little;
 
         let load_section =
-            |id: gimli::SectionId| -> Result<borrow::Cow<[u8]>, gimli::Error> {
+            |id: gimli::SectionId| -> Result<&[u8], gimli::Error> {
                 let sec_result = elf
                     .section_headers
                     .iter()
@@ -248,23 +247,21 @@ impl Tockilator {
                     })
                     .next();
                 if let Some(sec) = sec_result {
-                    return Ok(borrow::Cow::Borrowed(
-                        buffer
-                            .get(
-                                sec.sh_offset as usize
-                                    ..(sec.sh_offset + sec.sh_size) as usize,
-                            )
-                            .unwrap(),
-                    ));
+                    return Ok(buffer
+                        .get(
+                            sec.sh_offset as usize
+                                ..(sec.sh_offset + sec.sh_size) as usize,
+                        )
+                        .unwrap());
                 }
-                Ok(borrow::Cow::Borrowed(&[][..]))
+                Ok(&[])
             };
-        let load_section_sup = |_| Ok(borrow::Cow::Borrowed(&[][..]));
+        let load_section_sup = |_| -> Result<&[u8], gimli::Error> { Ok(&[]) };
         // Load all of the sections.
-        let dwarf_cow = gimli::Dwarf::load(&load_section, &load_section_sup)?;
-        // Borrow a `Cow[u8]` to create `EndianSlice`s for all of the sections.
-        let dwarf = dwarf_cow
-            .borrow(|section| gimli::EndianSlice::new(&*section, endian));
+        let dwarf = gimli::Dwarf::load(&load_section, &load_section_sup)?;
+        // Borrow all sections wrapped in EndianSlices
+        let dwarf =
+            dwarf.borrow(|section| gimli::EndianSlice::new(section, endian));
         // Iterate over the compilation units.
         let mut iter = dwarf.units();
         while let Some(header) = iter.next()? {
