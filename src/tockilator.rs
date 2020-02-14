@@ -231,8 +231,6 @@ impl Tockilator {
         buffer: &Vec<u8>,
         elf: &goblin::elf::Elf,
     ) -> Result<(), Box<dyn Error>> {
-        let endian = gimli::RunTimeEndian::Little;
-
         // Load all of the sections. This "load" operation just gets the data in
         // RAM -- since we've already loaded the Elf file, this can't fail.
         let dwarf = gimli::Dwarf::<&[u8]>::load::<_, _, Infallible>(
@@ -262,8 +260,9 @@ impl Tockilator {
             |_| Ok(&[]),
         )?;
         // Borrow all sections wrapped in EndianSlices
-        let dwarf =
-            dwarf.borrow(|section| gimli::EndianSlice::new(section, endian));
+        let dwarf = dwarf.borrow(|section| {
+            gimli::EndianSlice::new(section, gimli::LittleEndian)
+        });
         // Iterate over the compilation units.
         let mut iter = dwarf.units();
         while let Some(header) = iter.next()? {
@@ -307,9 +306,9 @@ impl Tockilator {
 
     fn dwarf_name<'a>(
         &mut self,
-        dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::RunTimeEndian>>,
+        dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>>,
         value: Option<
-            gimli::AttributeValue<gimli::EndianSlice<gimli::RunTimeEndian>>,
+            gimli::AttributeValue<gimli::EndianSlice<gimli::LittleEndian>>,
         >,
     ) -> Option<&'a str> {
         match value? {
