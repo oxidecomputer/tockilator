@@ -270,18 +270,15 @@ impl Tockilator {
                 while let Some(attr) = attrs.next()? {
                     match attr.name() {
                         gimli::constants::DW_AT_linkage_name => {
-                            linkage_name = Some(attr.value());
+                            linkage_name = dwarf_name(&dwarf, attr.value());
                         }
                         gimli::constants::DW_AT_name => {
-                            name = Some(attr.value());
+                            name = dwarf_name(&dwarf, attr.value());
                         }
                         _ => (),
                     }
                 }
-                if let (Some(nn), Some(ln)) = (
-                    self.dwarf_name(&dwarf, name),
-                    self.dwarf_name(&dwarf, linkage_name),
-                ) {
+                if let (Some(nn), Some(ln)) = (name, linkage_name) {
                     if ln != nn {
                         self.shortnames
                             .insert(String::from(ln), String::from(nn));
@@ -290,26 +287,6 @@ impl Tockilator {
             }
         }
         Ok(())
-    }
-
-    fn dwarf_name<'a>(
-        &mut self,
-        dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>>,
-        value: Option<
-            gimli::AttributeValue<gimli::EndianSlice<gimli::LittleEndian>>,
-        >,
-    ) -> Option<&'a str> {
-        match value? {
-            gimli::AttributeValue::DebugStrRef(strref) => {
-                if let Ok(dstring) = dwarf.debug_str.get_str(strref) {
-                    if let Ok(ddstring) = str::from_utf8(dstring.slice()) {
-                        return Some(ddstring);
-                    }
-                }
-            }
-            _ => (),
-        }
-        None
     }
 
     fn trace(
@@ -428,6 +405,20 @@ impl Tockilator {
     ) -> Result<(), Box<dyn Error>> {
         let mut file = BufReader::new(File::open(file)?);
         self.trace(&mut file, callback)
+    }
+}
+
+fn dwarf_name<'a>(
+    dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>>,
+    value: gimli::AttributeValue<gimli::EndianSlice<gimli::LittleEndian>>,
+) -> Option<&'a str> {
+    match value {
+        gimli::AttributeValue::DebugStrRef(strref) => {
+            let dstring = dwarf.debug_str.get_str(strref).ok()?;
+            let ddstring = str::from_utf8(dstring.slice()).ok()?;
+            Some(ddstring)
+        }
+        _ => None,
     }
 }
 
