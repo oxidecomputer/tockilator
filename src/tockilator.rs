@@ -3,6 +3,7 @@
  */
 
 use std::collections::BTreeMap;
+use std::convert::Infallible;
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -232,8 +233,11 @@ impl Tockilator {
     ) -> Result<(), Box<dyn Error>> {
         let endian = gimli::RunTimeEndian::Little;
 
-        let load_section =
-            |id: gimli::SectionId| -> Result<&[u8], gimli::Error> {
+        // Load all of the sections. This "load" operation just gets the data in
+        // RAM -- since we've already loaded the Elf file, this can't fail.
+        let dwarf = gimli::Dwarf::<&[u8]>::load::<_, _, Infallible>(
+            // Load the normal Dwarf section(s) from our Elf image.
+            |id| {
                 let sec_result = elf
                     .section_headers
                     .iter()
@@ -246,19 +250,17 @@ impl Tockilator {
                         }
                     })
                     .next();
-                if let Some(sec) = sec_result {
-                    return Ok(buffer
-                        .get(
-                            sec.sh_offset as usize
-                                ..(sec.sh_offset + sec.sh_size) as usize,
-                        )
-                        .unwrap());
-                }
-                Ok(&[])
-            };
-        let load_section_sup = |_| -> Result<&[u8], gimli::Error> { Ok(&[]) };
-        // Load all of the sections.
-        let dwarf = gimli::Dwarf::load(&load_section, &load_section_sup)?;
+                Ok(sec_result
+                    .map(|sec| {
+                        let offset = sec.sh_offset as usize;
+                        let size = sec.sh_size as usize;
+                        buffer.get(offset..offset + size).unwrap()
+                    })
+                    .unwrap_or(&[]))
+            },
+            // We don't have a supplemental object file.
+            |_| Ok(&[]),
+        )?;
         // Borrow all sections wrapped in EndianSlices
         let dwarf =
             dwarf.borrow(|section| gimli::EndianSlice::new(section, endian));
