@@ -7,8 +7,7 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# riscv-disasm = {git = "https://github.com/laanwj/rust-riscv-disasm" }
-disc-v = {path = "../disc-v"}
+disc-v = {git = "https://github.com/oxidecomputer/disc-v" }
 hex = "0.4.0"
 clap = "2.33.0"
 goblin = "0.2.0"
