@@ -3,6 +3,7 @@
  */
 
 use std::error::Error;
+use std::borrow::Borrow;
 
 use clap::{App, Arg};
 use disc_v::*;
@@ -48,6 +49,46 @@ fn dump(state: &TockilatorState) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn flowtrace(tockilator: &mut Tockilator, file: &str)
+  -> Result<(), Box<dyn Error>>
+{
+
+    let mut entry = false;
+
+    tockilator.tracefile(file, |state| -> Result<(), Box<dyn Error>> {
+        let f: &str = &format!("{:x}", state.pc);
+
+        if entry {
+            println!("{} {:width$} -> {}", "",
+                state.cycle,
+                match state.symbol {
+                    Some(sym) => sym.demangled.borrow(),
+                    None => f
+                },
+                width = state.stack.len() * 2);
+        }
+
+        if state.inst.op == rv_op::ret {
+            println!("{} {:width$} <- {}", "",
+                state.cycle,
+                match state.symbol {
+                    Some(sym) => sym.demangled.borrow(),
+                    None => f
+                },
+                width = state.stack.len() * 2);
+        }
+
+        match state.inst.op {
+            rv_op::jalr | rv_op::c_jalr | rv_op::jal | rv_op::c_jal => {
+                entry = true;
+            },
+            _ => { entry = false; }
+        }
+
+        Ok(())
+    })
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let matches = App::new("tockilator")
         .arg(
@@ -63,6 +104,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             Arg::with_name("no-dwarf")
                 .short("D")
                 .help("Disable DWARF processing"),
+        )
+        .arg(
+            Arg::with_name("flowtrace")
+                .short("F")
+                .help("shows only function flow trace")
         )
         .arg(Arg::with_name("tracefile").required(true).index(1))
         .get_matches();
@@ -82,7 +128,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    tockilator.tracefile(matches.value_of("tracefile").unwrap(), dump)?;
+    let file = matches.value_of("tracefile").unwrap();
+
+    if matches.is_present("flowtrace") {
+        flowtrace(&mut tockilator, file)?;
+    } else {
+        tockilator.tracefile(file, dump)?;
+    }
 
     Ok(())
 }
