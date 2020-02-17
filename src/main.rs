@@ -11,9 +11,6 @@ mod tockilator;
 use tockilator::*;
 
 fn dump(state: &TockilatorState) -> Result<(), Box<dyn Error>> {
-    let mut sp = state.iasm.split_ascii_whitespace().filter(|x| *x != "");
-    let asmop = sp.next().unwrap();
-    let asmarg = sp.next().unwrap_or("");
     let mut symbol = format!("{:8x}", state.pc);
 
     if let Some(sym) = state.symbol {
@@ -31,7 +28,7 @@ fn dump(state: &TockilatorState) -> Result<(), Box<dyn Error>> {
         state.cycle,
         state.pc,
         format!("{:0width$x}", state.inst.inst, width = state.inst.len),
-        format!("{:10} {}", asmop, asmarg),
+        format!("{:10} {}", state.asm_op, state.asm_args.unwrap_or("")),
         "",
         match state.inst.op {
             rv_op::jalr | rv_op::c_jalr | rv_op::jal | rv_op::c_jal => "->",

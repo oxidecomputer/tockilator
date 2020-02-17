@@ -51,8 +51,10 @@ pub struct TockilatorState<'a> {
     pub inst: &'a rv_decode,
     /// Machine general purpose registers.
     pub regs: &'a [u32; TOCKILATOR_NREGS],
-    /// Instruction text as printed by Verilator.
-    pub iasm: &'a str,
+    /// Instruction name as printed by Verilator.
+    pub asm_op: &'a str,
+    /// Instruction arguments as printed by Verilator.
+    pub asm_args: Option<&'a str>,
     /// Instruction effects, as printed by Verilator.
     pub effects: &'a str,
     /// Current stack model.
@@ -111,26 +113,26 @@ fn err<S: ToString>(msg: S) -> Box<dyn Error> {
 /// basic TSV.
 fn parse_verilator_line(
     line: &str,
-) -> Option<(usize, usize, u32, u32, &str, &str)> {
+) -> Option<(usize, usize, u32, u32, &str, Option<&str>, &str)> {
     let mut fields = line.match_indices("\t");
 
     let time = ..fields.next()?.0;
     let cycle = time.end + 1..fields.next()?.0;
     let pc = cycle.end + 1..fields.next()?.0;
     let ibin = pc.end + 1..fields.next()?.0;
-    let iasm = {
-        let end_or_separator = fields.next()?;
-        // If there's another tab, take it instead, but tolerate absence.
-        ibin.end + 1..fields.next().unwrap_or(end_or_separator).0
-    };
+    let asm_op = ibin.end + 1..fields.next()?.0;
+    let asm_args = fields.next().map(|(end, _)| asm_op.end + 1..end);
+
+    let fx_start = asm_args.as_ref().unwrap_or(&asm_op).end + 1;
 
     Some((
         usize::from_str_radix(&line[time].trim(), 10).ok()?,
         usize::from_str_radix(&line[cycle].trim(), 10).ok()?,
         u32::from_str_radix(&line[pc].trim(), 0x10).ok()?,
         u32::from_str_radix(&line[ibin].trim(), 0x10).ok()?,
-        &line[iasm.clone()].trim(),
-        &line[iasm.end + 1..].trim(),
+        line[asm_op].trim(),
+        asm_args.map(|args| line[args].trim()),
+        line[fx_start..].trim(),
     ))
 }
 
@@ -323,7 +325,7 @@ impl Tockilator {
                 err(format!("invalid input on line {}", lineno))
             })?;
 
-            let (time, cycle, pc, ibin, iasm, effects) = res;
+            let (time, cycle, pc, ibin, asm_op, asm_args, effects) = res;
 
             let val = parse_verilator_effects(effects).map_err(|e| {
                 err(format!("invalid effect on line {}: {}", lineno, e))
@@ -370,7 +372,8 @@ impl Tockilator {
                 pc,
                 symbol: symbol.as_ref(),
                 inst: &inst,
-                iasm: &iasm,
+                asm_op,
+                asm_args,
                 regs: &self.regs,
                 effects: &effects,
                 stack: &self.stack,
@@ -425,7 +428,7 @@ mod tests {
         );
         assert_eq!(
             res,
-            Some((22, 6, 32896, 0x80006f, "jal\tx0,8088", "x0=0x00000000"))
+            Some((22, 6, 32896, 0x80006f, "jal", Some("x0,8088"), "x0=0x00000000"))
         );
     }
 
@@ -441,7 +444,8 @@ mod tests {
                 46,
                 32994,
                 0x2a023,
-                "sw\tx0,0(x5)",
+                "sw",
+                Some("x0,0(x5)"),
                 "x5:0x10000000  x0:0x00000000 PA:0x10000000 store:0x00000000 load:0x00000000"
             ))
         );
