@@ -306,7 +306,7 @@ impl Tockilator {
     fn trace(
         &mut self,
         source: &mut std::io::BufReader<std::fs::File>,
-        callback: impl Fn(&TockilatorState) -> Result<(), Box<dyn Error>>,
+        mut callback: impl FnMut(&TockilatorState) -> Result<(), Box<dyn Error>>,
     ) -> Result<(), Box<dyn Error>> {
         let mut lines = source.lines();
 
@@ -396,7 +396,7 @@ impl Tockilator {
     pub fn tracefile(
         &mut self,
         file: &str,
-        callback: fn(&TockilatorState) -> Result<(), Box<dyn Error>>,
+        callback: impl FnMut(&TockilatorState) -> Result<(), Box<dyn Error>>,
     ) -> Result<(), Box<dyn Error>> {
         let mut file = BufReader::new(File::open(file)?);
         self.trace(&mut file, callback)
