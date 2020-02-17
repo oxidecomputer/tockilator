@@ -36,16 +36,27 @@ pub struct TockilatorSymbol<'a> {
 
 #[derive(Debug)]
 pub struct TockilatorState<'a> {
-    pub line: u64,                                // line in input
-    pub time: usize,                              // time
-    pub cycle: usize,                             // cycle count
-    pub pc: u32,                                  // program counter
-    pub symbol: Option<&'a TockilatorSymbol<'a>>, // symbol for pc, if any
-    pub inst: &'a rv_decode,                      // instruction decoded
-    pub regs: &'a [u32; TOCKILATOR_NREGS],        // registers
-    pub iasm: &'a str,    // instruction, as disp. by Verilator
-    pub effects: &'a str, // effects, as disp. by Verilator
-    pub stack: &'a [u32], // stack
+    /// Line in input (1-based).
+    pub line: u64,
+    /// Time of event, measured in Verilog simulator units (essentially
+    /// arbitrary but monotonic).
+    pub time: usize,
+    /// Cycle count in simulator.
+    pub cycle: usize,
+    /// Program counter value, giving address of current instruction.
+    pub pc: u32,
+    /// Last symbol before `pc`, if any.
+    pub symbol: Option<&'a TockilatorSymbol<'a>>,
+    /// Decoded instruction from disassembler.
+    pub inst: &'a rv_decode,
+    /// Machine general purpose registers.
+    pub regs: &'a [u32; TOCKILATOR_NREGS],
+    /// Instruction text as printed by Verilator.
+    pub iasm: &'a str,
+    /// Instruction effects, as printed by Verilator.
+    pub effects: &'a str,
+    /// Current stack model.
+    pub stack: &'a [u32],
 }
 
 #[derive(Debug)]
