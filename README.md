@@ -1,5 +1,6 @@
 # tockilator
 
+[![Build Status](https://travis-ci.org/oxidecomputer/tockilator.svg?branch=master)](https://travis-ci.org/oxidecomputer/tockilator)
 
 ```
 cargo run -- \

@@ -1,0 +1,17 @@
+# basic Rust build config
+language: rust
+
+# Build against released and pre-release toolchains.
+rust:
+  - stable
+  - beta
+  - nightly
+
+# Tolerate failures on nightly but not beta
+jobs:
+  allow_failures:
+    - rust: nightly
+  fast_finish: true
+
+# Cache build products to reduce iteration time.
+cache: cargo
