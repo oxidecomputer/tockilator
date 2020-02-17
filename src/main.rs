@@ -48,7 +48,7 @@ fn dump(state: &TockilatorState) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main_core() -> Result<(), Box<dyn Error>> {
     let matches = App::new("tockilator")
         .arg(
             Arg::with_name("elf")
@@ -85,4 +85,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     tockilator.tracefile(matches.value_of("tracefile").unwrap(), dump)?;
 
     Ok(())
+}
+
+fn main() {
+    if let Err(e) = main_core() {
+        eprintln!("Error: {}", e);
+    }
 }
