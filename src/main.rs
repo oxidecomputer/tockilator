@@ -7,7 +7,6 @@ use std::error::Error;
 use clap::{App, Arg};
 use disc_v::*;
 
-mod tockilator;
 use tockilator::*;
 
 fn dump(state: &TockilatorState) -> Result<(), Box<dyn Error>> {
