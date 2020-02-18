@@ -42,7 +42,7 @@ pub struct TockilatorState<'a> {
     /// arbitrary but monotonic).
     pub time: usize,
     /// Cycle count in simulator.
-    pub cycle: usize,
+    pub cycle: u64,
     /// Program counter value, giving address of current instruction.
     pub pc: u32,
     /// Last symbol before `pc`, if any.
@@ -113,7 +113,7 @@ fn err<S: ToString>(msg: S) -> Box<dyn Error> {
 /// basic TSV.
 fn parse_verilator_line(
     line: &str,
-) -> Option<(usize, usize, u32, u32, &str, Option<&str>, &str)> {
+) -> Option<(usize, u64, u32, u32, &str, Option<&str>, &str)> {
     let mut fields = line.match_indices("\t");
 
     let time = ..fields.next()?.0;
@@ -127,7 +127,7 @@ fn parse_verilator_line(
 
     Some((
         usize::from_str_radix(&line[time].trim(), 10).ok()?,
-        usize::from_str_radix(&line[cycle].trim(), 10).ok()?,
+        u64::from_str_radix(&line[cycle].trim(), 10).ok()?,
         u32::from_str_radix(&line[pc].trim(), 0x10).ok()?,
         u32::from_str_radix(&line[ibin].trim(), 0x10).ok()?,
         line[asm_op].trim(),
@@ -303,6 +303,33 @@ impl Tockilator {
         Ok(())
     }
 
+    pub fn lookup(&self, addr: u32) -> Option<TockilatorSymbol> {
+        if let Some(sym) = self.symbols.range(..=addr as u64).next_back() {
+            if (addr as u64) < *sym.0 + (sym.1).1 {
+                let name = &(sym.1).0;
+
+                /*
+                 * Check to see if we have a short name from DWARF;
+                 * otherwise run it through the demangler.
+                 */
+                let demangled =
+                    if let Some(shortname) = self.shortnames.get(name) {
+                        shortname.into()
+                    } else {
+                        demangle(name).to_string().into()
+                    };
+
+                return Some(TockilatorSymbol {
+                    addr: *sym.0 as u32,
+                    name: &(sym.1).0,
+                    demangled,
+                });
+            }
+        }
+
+        None
+    }
+
     fn trace(
         &mut self,
         source: &mut std::io::BufReader<std::fs::File>,
@@ -340,37 +367,12 @@ impl Tockilator {
              */
             let inst = decode_inst(rv_isa::rv32, pc as u64, ibin as u64);
 
-            let mut symbol: Option<TockilatorSymbol> = None;
-
-            if let Some(sym) = self.symbols.range(..=pc as u64).next_back() {
-                if (pc as u64) < *sym.0 + (sym.1).1 {
-                    let name = &(sym.1).0;
-
-                    /*
-                     * Check to see if we have a short name from DWARF;
-                     * otherwise run it through the demangler.
-                     */
-                    let demangled =
-                        if let Some(shortname) = self.shortnames.get(name) {
-                            shortname.into()
-                        } else {
-                            demangle(name).to_string().into()
-                        };
-
-                    symbol = Some(TockilatorSymbol {
-                        addr: *sym.0 as u32,
-                        name: &(sym.1).0,
-                        demangled,
-                    });
-                }
-            }
-
             callback(&TockilatorState {
                 line: lineno as u64,
                 time,
                 cycle,
                 pc,
-                symbol: symbol.as_ref(),
+                symbol: self.lookup(pc).as_ref(),
                 inst: &inst,
                 asm_op,
                 asm_args,

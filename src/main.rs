@@ -4,12 +4,24 @@
 
 use std::error::Error;
 use std::borrow::Borrow;
+use std::collections::HashMap;
 
 use clap::{App, Arg};
 use disc_v::*;
 
 mod tockilator;
 use tockilator::*;
+
+macro_rules! fatal {
+    ($fmt:expr) => ({
+        eprint!(concat!("tockilator: ", $fmt, "\n"));
+        ::std::process::exit(1);
+    });
+    ($fmt:expr, $($arg:tt)*) => ({
+        eprint!(concat!("tockilator: ", $fmt, "\n"), $($arg)*);
+        ::std::process::exit(1);
+    });
+}
 
 fn dump(state: &TockilatorState) -> Result<(), Box<dyn Error>> {
     let mut symbol = format!("{:8x}", state.pc);
@@ -85,6 +97,56 @@ fn flowtrace(tockilator: &mut Tockilator, file: &str)
     })
 }
 
+fn flamegraph(tockilator: &mut Tockilator, file: &str, cycles: u64)
+  -> Result<(), Box<dyn Error>>
+{
+    let mut fired: u64 = 0;
+    let mut stacks: HashMap<Vec<u32>, u64> = HashMap::new();
+
+    tockilator.tracefile(file, |state| -> Result<(), Box<dyn Error>> {
+        if fired == 0 {
+            fired = state.cycle;
+            return Ok(());
+        }
+
+        if state.cycle - fired < cycles {
+            return Ok(());
+        }
+
+        fired = state.cycle;
+
+        let mut s: Vec<u32> = state.stack.iter().cloned().collect();
+        s.push(state.pc);
+
+        let count = stacks.entry(s).or_insert(0);
+        *count += 1;
+
+        Ok(())
+    })?;
+
+    for (stack, count) in stacks {
+        let mut first = true;
+
+        for frame in stack {
+            if first {
+                first = false;
+            } else {
+                print!(";");
+            }
+
+            if let Some(sym) = tockilator.lookup(frame) {
+                print!("{}", sym.demangled);
+            } else {
+                print!("0x{:x}", frame);
+            }
+        }
+
+        println!(" {}", count);
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let matches = App::new("tockilator")
         .arg(
@@ -106,6 +168,15 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .short("F")
                 .help("shows only function flow trace")
         )
+        .arg(
+            Arg::with_name("flamegraph")
+                .short("f")
+                .value_name("CYCLES")
+                .help("generate flamegraph profiling at CYCLES granularity")
+                .number_of_values(1)
+                .takes_value(true)
+                .conflicts_with("flowtrace")
+        )
         .arg(Arg::with_name("tracefile").required(true).index(1))
         .get_matches();
 
@@ -126,7 +197,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let file = matches.value_of("tracefile").unwrap();
 
-    if matches.is_present("flowtrace") {
+    if let Some(cycles) = matches.value_of("flamegraph") {
+        let interval = cycles.parse::<u64>()
+            .map_err(|_| fatal!("invalid cycle count")).unwrap();
+
+        flamegraph(&mut tockilator, file, interval)?;
+    } else if matches.is_present("flowtrace") {
         flowtrace(&mut tockilator, file)?;
     } else {
         tockilator.tracefile(file, dump)?;
