@@ -64,6 +64,8 @@ fn flowtrace(tockilator: &mut Tockilator, file: &str)
                 width = state.stack.len() * 2);
         }
 
+        println!("{:?}", state.inlined);
+
         if state.inst.op == rv_op::ret {
             println!("{} {:width$} <- {}", "",
                 state.cycle,

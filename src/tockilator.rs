@@ -24,9 +24,16 @@ pub struct Tockilator {
     symbols: BTreeMap<u64, (String, u64)>,  // ELF symbols
     shortnames: BTreeMap<String, String>,   // demangled names from DWARF
     subprograms: BTreeMap<usize, String>,   // DWARF subprograms
-    inlined: BTreeMap<u64, (u64, isize, usize)>,  // inlined funcs by address
+    inlined: BTreeMap<(u64, isize), (u64, usize)>,  // inlined funcs by address
     regs: [u32; TOCKILATOR_NREGS],          // current register state
     stack: Vec<u32>,
+}
+
+#[derive(Debug)]
+pub struct TockilatorInlined<'a> {
+    pub addr: u32,
+    pub name: &'a str,
+    pub id: usize,
 }
 
 #[derive(Debug)]
@@ -61,6 +68,8 @@ pub struct TockilatorState<'a> {
     pub effects: &'a str,
     /// Current stack model.
     pub stack: &'a [u32],
+    /// Inlined stack
+    pub inlined: &'a [TockilatorInlined<'a>],
 }
 
 #[derive(Debug)]
@@ -321,7 +330,7 @@ impl Tockilator {
                     }
 
                     if let (Some(addr), Some(len), Some(o)) = (low, high, origin) {
-                        self.inlined.insert(addr, (len, depth, o));
+                        self.inlined.insert((addr, depth), (len, o));
                         continue;
                     }
 
@@ -428,7 +437,35 @@ impl Tockilator {
                     });
                 }
             }
-               
+
+            let mut inlined: Vec<TockilatorInlined> = vec![];
+
+            for ((addr, _depth), (len, goff)) in
+              self.inlined.range(..=(pc as u64, std::isize::MAX)).rev() {
+                if addr + len < base as u64 {
+                    break;
+                }
+
+                if addr + len < pc as u64 {
+                    continue;
+                }
+
+/*
+                println!("pc=0x{:x}, addr=0x{:x}, len={}, goff=0x{:x}, depth={}",
+                    pc, addr, len, goff, depth);
+*/
+
+                if let Some(func) = self.subprograms.get(goff) {
+                    inlined.push(TockilatorInlined {
+                        addr: *addr as u32,
+                        name: &func,
+                        id: *goff,
+                    });
+                }
+            }
+
+            inlined.reverse();
+
             callback(&TockilatorState {
                 line: lineno as u64,
                 time,
@@ -441,26 +478,9 @@ impl Tockilator {
                 regs: &self.regs,
                 effects: &effects,
                 stack: &self.stack,
+                inlined: inlined.as_slice(),
             })?;
 
-            for (addr, (len, depth, goff)) in
-              self.inlined.range(..=pc as u64).rev() {
-                if addr + len < base as u64 {
-                    break;
-                }
-
-                if addr + len < pc as u64 {
-                    continue;
-                }
-
-                println!("pc=0x{:x}, addr=0x{:x}, len={}, goff=0x{:x}, depth={}",
-                    pc, addr, len, goff, depth);
-
-                if let Some(func) = self.subprograms.get(goff) {
-                    println!(" inlined {:?}", func);
-                }
-            }
- 
             match inst.op {
                 rv_op::jalr | rv_op::c_jalr | rv_op::jal | rv_op::c_jal => {
                     self.stack.push(pc);
