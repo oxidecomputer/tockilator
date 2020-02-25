@@ -21,9 +21,11 @@ const TOCKILATOR_REGPREFIX: &'static str = "x";
 
 #[derive(Debug, Default)]
 pub struct Tockilator {
-    symbols: BTreeMap<u64, (String, u64)>, // ELF symbols
-    shortnames: BTreeMap<String, String>,  // demangled names from DWARF
-    regs: [u32; TOCKILATOR_NREGS],         // current register state
+    symbols: BTreeMap<u64, (String, u64)>,  // ELF symbols
+    shortnames: BTreeMap<String, String>,   // demangled names from DWARF
+    subprograms: BTreeMap<usize, String>,   // DWARF subprograms
+    inlined: BTreeMap<u64, (u64, isize, usize)>,  // inlined funcs by address
+    regs: [u32; TOCKILATOR_NREGS],          // current register state
     stack: Vec<u32>,
 }
 
@@ -265,13 +267,67 @@ impl Tockilator {
         let dwarf = dwarf.borrow(|section| {
             gimli::EndianSlice::new(section, gimli::LittleEndian)
         });
+
         // Iterate over the compilation units.
         let mut iter = dwarf.units();
         while let Some(header) = iter.next()? {
             let unit = dwarf.unit(header)?;
             // Iterate over the Debugging Information Entries (DIEs) in the unit.
             let mut entries = unit.entries();
-            while let Some((_, entry)) = entries.next_dfs()? {
+            let mut depth = 0;
+
+            while let Some((delta, entry)) = entries.next_dfs()? {
+                let goff = match entry.offset().to_unit_section_offset(&unit) {
+                    gimli::UnitSectionOffset::DebugInfoOffset(o) => o.0,
+                    gimli::UnitSectionOffset::DebugTypesOffset(o) => o.0,
+                };
+
+                depth += delta;
+
+                if entry.tag() == gimli::constants::DW_TAG_inlined_subroutine {
+                    /*
+                     * Iterate over our attributes looking for addresses
+                     */
+                    let mut attrs = entry.attrs();
+                    let mut low: Option<u64> = None;
+                    let mut high: Option<u64> = None;
+                    let mut origin: Option<usize> = None;
+
+                    while let Some(attr) = attrs.next()? {
+                        match (attr.name(), attr.value()) {
+                            (gimli::constants::DW_AT_low_pc,
+                                gimli::AttributeValue::Addr(addr)) => {
+                                low = Some(addr);
+                            }
+                            (gimli::constants::DW_AT_high_pc,
+                                gimli::AttributeValue::Udata(data)) => {
+                                high = Some(data);
+                            }
+                            (gimli::constants::DW_AT_abstract_origin,
+                                gimli::AttributeValue::UnitRef(offs)) => {
+                                origin = match offs.to_unit_section_offset(&unit) {
+                                    gimli::UnitSectionOffset::
+                                        DebugInfoOffset(o) => Some(o.0),
+                                    gimli::UnitSectionOffset::
+                                        DebugTypesOffset(o) => Some(o.0),
+                                }
+                            }
+                            (gimli::constants::DW_AT_abstract_origin,
+                                gimli::AttributeValue::DebugInfoRef(offs)) => {
+                                origin = Some(offs.0);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if let (Some(addr), Some(len), Some(o)) = (low, high, origin) {
+                        self.inlined.insert(addr, (len, depth, o));
+                        continue;
+                    }
+
+                    err(format!("missing address range for GOFF 0x{:x}", goff));
+                }
+
                 if entry.tag() != gimli::constants::DW_TAG_subprogram {
                     continue;
                 }
@@ -297,6 +353,11 @@ impl Tockilator {
                         self.shortnames
                             .insert(String::from(ln), String::from(nn));
                     }
+
+                }
+
+                if let Some(nn) = name {
+                    self.subprograms.insert(goff, String::from(nn));
                 }
             }
         }
@@ -341,6 +402,7 @@ impl Tockilator {
             let inst = decode_inst(rv_isa::rv32, pc as u64, ibin as u64);
 
             let mut symbol: Option<TockilatorSymbol> = None;
+            let mut base = pc;
 
             if let Some(sym) = self.symbols.range(..=pc as u64).next_back() {
                 if (pc as u64) < *sym.0 + (sym.1).1 {
@@ -357,14 +419,16 @@ impl Tockilator {
                             demangle(name).to_string().into()
                         };
 
+                    base = *sym.0 as u32;
+
                     symbol = Some(TockilatorSymbol {
-                        addr: *sym.0 as u32,
+                        addr: base,
                         name: &(sym.1).0,
                         demangled,
                     });
                 }
             }
-
+               
             callback(&TockilatorState {
                 line: lineno as u64,
                 time,
@@ -379,6 +443,24 @@ impl Tockilator {
                 stack: &self.stack,
             })?;
 
+            for (addr, (len, depth, goff)) in
+              self.inlined.range(..=pc as u64).rev() {
+                if addr + len < base as u64 {
+                    break;
+                }
+
+                if addr + len < pc as u64 {
+                    continue;
+                }
+
+                println!("pc=0x{:x}, addr=0x{:x}, len={}, goff=0x{:x}, depth={}",
+                    pc, addr, len, goff, depth);
+
+                if let Some(func) = self.subprograms.get(goff) {
+                    println!(" inlined {:?}", func);
+                }
+            }
+ 
             match inst.op {
                 rv_op::jalr | rv_op::c_jalr | rv_op::jal | rv_op::c_jal => {
                     self.stack.push(pc);

@@ -106,6 +106,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .short("F")
                 .help("shows only function flow trace")
         )
+        .arg(
+            Arg::with_name("dryrun")
+                .short("n")
+                .help("do not process trace file")
+        )
         .arg(Arg::with_name("tracefile").required(true).index(1))
         .get_matches();
 
@@ -122,6 +127,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 },
             )?;
         }
+    }
+
+    if matches.is_present("dryrun") {
+        return Ok(())
     }
 
     let file = matches.value_of("tracefile").unwrap();
