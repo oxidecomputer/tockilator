@@ -2,6 +2,7 @@
  * Copyright 2020 Oxide Computer Company
  */
 
+use fallible_iterator::FallibleIterator;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::convert::Infallible;
@@ -11,7 +12,6 @@ use std::fs;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::str;
-use fallible_iterator::FallibleIterator;
 
 use disc_v::*;
 use goblin::elf::Elf;
@@ -22,12 +22,12 @@ const TOCKILATOR_REGPREFIX: &'static str = "x";
 
 #[derive(Debug, Default)]
 pub struct Tockilator {
-    symbols: BTreeMap<u64, (String, u64)>,  // ELF symbols
-    shortnames: BTreeMap<String, String>,   // demangled names from DWARF
-    subprograms: BTreeMap<usize, String>,   // DWARF subprograms
-    inlined: BTreeMap<(u64, isize), (u64, usize)>,  // inlined funcs by address
-    regs: [u32; TOCKILATOR_NREGS],          // current register state
-    stack: Vec<(u32, usize)>,               // current stack
+    symbols: BTreeMap<u64, (String, u64)>, // ELF symbols
+    shortnames: BTreeMap<String, String>,  // demangled names from DWARF
+    subprograms: BTreeMap<usize, String>,  // DWARF subprograms
+    inlined: BTreeMap<(u64, isize), (u64, usize)>, // inlined funcs by address
+    regs: [u32; TOCKILATOR_NREGS],         // current register state
+    stack: Vec<(u32, usize)>,              // current stack
 }
 
 #[derive(Debug)]
@@ -305,26 +305,35 @@ impl Tockilator {
 
                     while let Some(attr) = attrs.next()? {
                         match (attr.name(), attr.value()) {
-                            (gimli::constants::DW_AT_low_pc,
-                                gimli::AttributeValue::Addr(addr)) => {
+                            (
+                                gimli::constants::DW_AT_low_pc,
+                                gimli::AttributeValue::Addr(addr),
+                            ) => {
                                 low = Some(addr);
                             }
-                            (gimli::constants::DW_AT_high_pc,
-                                gimli::AttributeValue::Udata(data)) => {
+                            (
+                                gimli::constants::DW_AT_high_pc,
+                                gimli::AttributeValue::Udata(data),
+                            ) => {
                                 high = Some(data);
                             }
-                            (gimli::constants::DW_AT_abstract_origin,
-                                gimli::AttributeValue::UnitRef(offs)) => {
-                                origin =
-                                  match offs.to_unit_section_offset(&unit) {
-                                    gimli::UnitSectionOffset::
-                                        DebugInfoOffset(o) => Some(o.0),
-                                    gimli::UnitSectionOffset::
-                                        DebugTypesOffset(o) => Some(o.0),
-                                }
-                            }
-                            (gimli::constants::DW_AT_abstract_origin,
-                                gimli::AttributeValue::DebugInfoRef(offs)) => {
+                            (
+                                gimli::constants::DW_AT_abstract_origin,
+                                gimli::AttributeValue::UnitRef(offs),
+                            ) => origin = match offs
+                                .to_unit_section_offset(&unit)
+                            {
+                                gimli::UnitSectionOffset::DebugInfoOffset(
+                                    o,
+                                ) => Some(o.0),
+                                gimli::UnitSectionOffset::DebugTypesOffset(
+                                    o,
+                                ) => Some(o.0),
+                            },
+                            (
+                                gimli::constants::DW_AT_abstract_origin,
+                                gimli::AttributeValue::DebugInfoRef(offs),
+                            ) => {
                                 origin = Some(offs.0);
                             }
 
@@ -339,19 +348,25 @@ impl Tockilator {
                         }
                         (None, None, Some(_o)) => {}
                         _ => {
-                            return Err(err(format!(concat!("missing origin ",
-                                "for GOFF 0x{:x}"), goff)));
+                            return Err(err(format!(
+                                "missing origin for GOFF 0x{:x}",
+                                goff
+                            )));
                         }
                     }
 
                     let mut attrs = entry.attrs();
                     while let Some(attr) = attrs.next()? {
                         match (attr.name(), attr.value()) {
-                            (gimli::constants::DW_AT_ranges,
-                                gimli::AttributeValue::RangeListsRef(r)) => {
-                                let raw_ranges = dwarf.ranges.raw_ranges(r,
-                                    unit.encoding())?;
-                                let raw_ranges: Vec<_> = raw_ranges.collect()?;
+                            (
+                                gimli::constants::DW_AT_ranges,
+                                gimli::AttributeValue::RangeListsRef(r),
+                            ) => {
+                                let raw_ranges = dwarf
+                                    .ranges
+                                    .raw_ranges(r, unit.encoding())?;
+                                let raw_ranges: Vec<_> =
+                                    raw_ranges.collect()?;
 
                                 for r in raw_ranges {
                                     match r {
@@ -369,8 +384,10 @@ impl Tockilator {
                         }
                     }
 
-                    return Err(err(format!(concat!("missing address range ",
-                        "for GOFF 0x{:x}"), goff)));
+                    return Err(err(format!(
+                        "missing address range for GOFF 0x{:x}",
+                        goff
+                    )));
                 }
 
                 if entry.tag() != gimli::constants::DW_TAG_subprogram {
@@ -476,7 +493,8 @@ impl Tockilator {
             let mut inlined: Vec<TockilatorInlined> = vec![];
 
             for ((addr, _depth), (len, goff)) in
-              self.inlined.range(..=(pc as u64, std::isize::MAX)).rev() {
+                self.inlined.range(..=(pc as u64, std::isize::MAX)).rev()
+            {
                 if addr + len < base as u64 {
                     break;
                 }
@@ -560,7 +578,15 @@ mod tests {
         );
         assert_eq!(
             res,
-            Some((22, 6, 32896, 0x80006f, "jal", Some("x0,8088"), "x0=0x00000000"))
+            Some((
+                22,
+                6,
+                32896,
+                0x80006f,
+                "jal",
+                Some("x0,8088"),
+                "x0=0x00000000"
+            ))
         );
     }
 
