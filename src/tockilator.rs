@@ -26,7 +26,7 @@ pub struct Tockilator {
     subprograms: BTreeMap<usize, String>,   // DWARF subprograms
     inlined: BTreeMap<(u64, isize), (u64, usize)>,  // inlined funcs by address
     regs: [u32; TOCKILATOR_NREGS],          // current register state
-    stack: Vec<u32>,
+    stack: Vec<(u32, usize)>,               // current stack
 }
 
 #[derive(Debug)]
@@ -67,7 +67,7 @@ pub struct TockilatorState<'a> {
     /// Instruction effects, as printed by Verilator.
     pub effects: &'a str,
     /// Current stack model.
-    pub stack: &'a [u32],
+    pub stack: &'a [(u32, usize)],
     /// Inlined stack
     pub inlined: &'a [TockilatorInlined<'a>],
 }
@@ -450,11 +450,6 @@ impl Tockilator {
                     continue;
                 }
 
-/*
-                println!("pc=0x{:x}, addr=0x{:x}, len={}, goff=0x{:x}, depth={}",
-                    pc, addr, len, goff, depth);
-*/
-
                 if let Some(func) = self.subprograms.get(goff) {
                     inlined.push(TockilatorInlined {
                         addr: *addr as u32,
@@ -483,7 +478,7 @@ impl Tockilator {
 
             match inst.op {
                 rv_op::jalr | rv_op::c_jalr | rv_op::jal | rv_op::c_jal => {
-                    self.stack.push(pc);
+                    self.stack.push((pc, inlined.len()));
                 }
                 rv_op::ret => {
                     self.stack.pop().or_else(|| panic!("underrun"));

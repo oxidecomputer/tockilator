@@ -50,30 +50,47 @@ fn flowtrace(tockilator: &mut Tockilator, file: &str)
 {
 
     let mut entry = false;
+    let mut inlined: Vec<usize> = vec![];
 
     tockilator.tracefile(file, |state| -> Result<(), Box<dyn Error>> {
         let f: &str = &format!("{:x}", state.pc);
+        let base = state.stack.iter().fold(0, |sum, &val| { sum + val.1 });
 
         if entry {
-            println!("{} {:width$} -> {}", "",
-                state.cycle,
+            println!("{} {:width$} -> {}", state.cycle, "",
                 match state.symbol {
                     Some(sym) => sym.demangled.borrow(),
                     None => f
                 },
-                width = state.stack.len() * 2);
+                width = (state.stack.len() * 2) + base);
         }
 
-        println!("{:?}", state.inlined);
+        for i in 0..state.inlined.len() {
+            if i < inlined.len() && inlined[i] == state.inlined[i].id {
+                continue;
+            }
+
+            println!("{} {:width$}    {:iwidth$}| {}",
+                state.cycle, "", "", state.inlined[i].name,
+                width = (state.stack.len() * 2) + base,
+                iwidth = i * 2);
+        }
+
+        while let Some(_top) = inlined.pop() {
+            continue;
+        }
+
+        for inline in state.inlined {
+            inlined.push(inline.id);
+        }
 
         if state.inst.op == rv_op::ret {
-            println!("{} {:width$} <- {}", "",
-                state.cycle,
+            println!("{} {:width$} <- {}", state.cycle, "",
                 match state.symbol {
                     Some(sym) => sym.demangled.borrow(),
                     None => f
                 },
-                width = state.stack.len() * 2);
+                width = (state.stack.len() * 2) + base);
         }
 
         match state.inst.op {
