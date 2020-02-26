@@ -207,6 +207,7 @@ version = "0.1.0"
 dependencies = [
  "clap 2.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "disc-v 0.1.1 (git+https://github.com/oxidecomputer/disc-v)",
+ "fallible-iterator 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "gimli 0.20.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "goblin 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "hex 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",

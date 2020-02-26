@@ -11,6 +11,7 @@ use std::fs;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::str;
+use fallible_iterator::FallibleIterator;
 
 use disc_v::*;
 use goblin::elf::Elf;
@@ -285,7 +286,7 @@ impl Tockilator {
             let mut entries = unit.entries();
             let mut depth = 0;
 
-            while let Some((delta, entry)) = entries.next_dfs()? {
+            'outer: while let Some((delta, entry)) = entries.next_dfs()? {
                 let goff = match entry.offset().to_unit_section_offset(&unit) {
                     gimli::UnitSectionOffset::DebugInfoOffset(o) => o.0,
                     gimli::UnitSectionOffset::DebugTypesOffset(o) => o.0,
@@ -314,7 +315,8 @@ impl Tockilator {
                             }
                             (gimli::constants::DW_AT_abstract_origin,
                                 gimli::AttributeValue::UnitRef(offs)) => {
-                                origin = match offs.to_unit_section_offset(&unit) {
+                                origin =
+                                  match offs.to_unit_section_offset(&unit) {
                                     gimli::UnitSectionOffset::
                                         DebugInfoOffset(o) => Some(o.0),
                                     gimli::UnitSectionOffset::
@@ -325,16 +327,50 @@ impl Tockilator {
                                 gimli::AttributeValue::DebugInfoRef(offs)) => {
                                 origin = Some(offs.0);
                             }
+
                             _ => {}
                         }
                     }
 
-                    if let (Some(addr), Some(len), Some(o)) = (low, high, origin) {
-                        self.inlined.insert((addr, depth), (len, o));
-                        continue;
+                    match (low, high, origin) {
+                        (Some(addr), Some(len), Some(o)) => {
+                            self.inlined.insert((addr, depth), (len, o));
+                            continue;
+                        }
+                        (None, None, Some(_o)) => {}
+                        _ => {
+                            return Err(err(format!(concat!("missing origin ",
+                                "for GOFF 0x{:x}"), goff)));
+                        }
                     }
 
-                    err(format!("missing address range for GOFF 0x{:x}", goff));
+                    let mut attrs = entry.attrs();
+                    while let Some(attr) = attrs.next()? {
+                        match (attr.name(), attr.value()) {
+                            (gimli::constants::DW_AT_ranges,
+                                gimli::AttributeValue::RangeListsRef(r)) => {
+                                let raw_ranges = dwarf.ranges.raw_ranges(r,
+                                    unit.encoding())?;
+                                let raw_ranges: Vec<_> = raw_ranges.collect()?;
+
+                                for r in raw_ranges {
+                                    match r {
+                                        gimli::RawRngListEntry::
+                                          AddressOrOffsetPair { begin, end } => {
+                                            self.inlined.insert((begin, depth),
+                                                (end - begin, origin.unwrap()));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                continue 'outer;
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    return Err(err(format!(concat!("missing address range ",
+                        "for GOFF 0x{:x}"), goff)));
                 }
 
                 if entry.tag() != gimli::constants::DW_TAG_subprogram {
@@ -362,7 +398,6 @@ impl Tockilator {
                         self.shortnames
                             .insert(String::from(ln), String::from(nn));
                     }
-
                 }
 
                 if let Some(nn) = name {
