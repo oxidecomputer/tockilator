@@ -17,7 +17,7 @@ use disc_v::*;
 use goblin::elf::Elf;
 use rustc_demangle::demangle;
 
-const TOCKILATOR_NREGS: usize = 32;
+pub const TOCKILATOR_NREGS: usize = 32;
 const TOCKILATOR_REGPREFIX: &'static str = "x";
 
 #[derive(Debug, Default)]
