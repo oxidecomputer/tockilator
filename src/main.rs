@@ -2,8 +2,8 @@
  * Copyright 2020 Oxide Computer Company
  */
 
-use std::error::Error;
 use std::borrow::Borrow;
+use std::error::Error;
 
 use clap::{App, Arg};
 use disc_v::*;
@@ -45,40 +45,74 @@ fn dump(state: &TockilatorState) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn flowtrace(tockilator: &mut Tockilator, file: &str)
-  -> Result<(), Box<dyn Error>>
-{
-
+fn flowtrace(
+    tockilator: &mut Tockilator,
+    file: &str,
+) -> Result<(), Box<dyn Error>> {
     let mut entry = false;
+    let mut inlined: Vec<usize> = vec![];
 
     tockilator.tracefile(file, |state| -> Result<(), Box<dyn Error>> {
         let f: &str = &format!("{:x}", state.pc);
+        let base = state.stack.iter().fold(0, |sum, &val| sum + val.1);
 
         if entry {
-            println!("{} {:width$} -> {}", "",
+            println!(
+                "{} {:width$} -> {}",
                 state.cycle,
+                "",
                 match state.symbol {
                     Some(sym) => sym.demangled.borrow(),
-                    None => f
+                    None => f,
                 },
-                width = state.stack.len() * 2);
+                width = (state.stack.len() * 2) + base
+            );
+        }
+
+        for i in 0..state.inlined.len() {
+            if i < inlined.len() && inlined[i] == state.inlined[i].id {
+                continue;
+            }
+
+            println!(
+                "{} {:width$}    {:iwidth$}| {}",
+                state.cycle,
+                "",
+                "",
+                state.inlined[i].name,
+                width = (state.stack.len() * 2) + base,
+                iwidth = i * 2
+            );
+        }
+
+        while let Some(_top) = inlined.pop() {
+            continue;
+        }
+
+        for inline in state.inlined {
+            inlined.push(inline.id);
         }
 
         if state.inst.op == rv_op::ret {
-            println!("{} {:width$} <- {}", "",
+            println!(
+                "{} {:width$} <- {}",
                 state.cycle,
+                "",
                 match state.symbol {
                     Some(sym) => sym.demangled.borrow(),
-                    None => f
+                    None => f,
                 },
-                width = state.stack.len() * 2);
+                width = (state.stack.len() * 2) + base
+            );
         }
 
         match state.inst.op {
             rv_op::jalr | rv_op::c_jalr | rv_op::jal | rv_op::c_jal => {
                 entry = true;
-            },
-            _ => { entry = false; }
+            }
+            _ => {
+                entry = false;
+            }
         }
 
         Ok(())
@@ -104,7 +138,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         .arg(
             Arg::with_name("flowtrace")
                 .short("F")
-                .help("shows only function flow trace")
+                .help("shows only function flow trace"),
+        )
+        .arg(
+            Arg::with_name("dryrun")
+                .short("n")
+                .help("do not process trace file"),
         )
         .arg(Arg::with_name("tracefile").required(true).index(1))
         .get_matches();
@@ -122,6 +161,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 },
             )?;
         }
+    }
+
+    if matches.is_present("dryrun") {
+        return Ok(());
     }
 
     let file = matches.value_of("tracefile").unwrap();

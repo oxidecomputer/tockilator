@@ -2,6 +2,7 @@
  * Copyright 2020 Oxide Computer Company
  */
 
+use fallible_iterator::FallibleIterator;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::convert::Infallible;
@@ -23,8 +24,17 @@ const TOCKILATOR_REGPREFIX: &'static str = "x";
 pub struct Tockilator {
     symbols: BTreeMap<u64, (String, u64)>, // ELF symbols
     shortnames: BTreeMap<String, String>,  // demangled names from DWARF
+    subprograms: BTreeMap<usize, String>,  // DWARF subprograms
+    inlined: BTreeMap<(u64, isize), (u64, usize)>, // inlined funcs by address
     regs: [u32; TOCKILATOR_NREGS],         // current register state
-    stack: Vec<u32>,
+    stack: Vec<(u32, usize)>,              // current stack
+}
+
+#[derive(Debug)]
+pub struct TockilatorInlined<'a> {
+    pub addr: u32,
+    pub name: &'a str,
+    pub id: usize,
 }
 
 #[derive(Debug)]
@@ -58,7 +68,9 @@ pub struct TockilatorState<'a> {
     /// Instruction effects, as printed by Verilator.
     pub effects: &'a str,
     /// Current stack model.
-    pub stack: &'a [u32],
+    pub stack: &'a [(u32, usize)],
+    /// Inlined stack
+    pub inlined: &'a [TockilatorInlined<'a>],
 }
 
 #[derive(Debug)]
@@ -265,13 +277,119 @@ impl Tockilator {
         let dwarf = dwarf.borrow(|section| {
             gimli::EndianSlice::new(section, gimli::LittleEndian)
         });
+
         // Iterate over the compilation units.
         let mut iter = dwarf.units();
         while let Some(header) = iter.next()? {
             let unit = dwarf.unit(header)?;
             // Iterate over the Debugging Information Entries (DIEs) in the unit.
             let mut entries = unit.entries();
-            while let Some((_, entry)) = entries.next_dfs()? {
+            let mut depth = 0;
+
+            'outer: while let Some((delta, entry)) = entries.next_dfs()? {
+                let goff = match entry.offset().to_unit_section_offset(&unit) {
+                    gimli::UnitSectionOffset::DebugInfoOffset(o) => o.0,
+                    gimli::UnitSectionOffset::DebugTypesOffset(o) => o.0,
+                };
+
+                depth += delta;
+
+                if entry.tag() == gimli::constants::DW_TAG_inlined_subroutine {
+                    /*
+                     * Iterate over our attributes looking for addresses
+                     */
+                    let mut attrs = entry.attrs();
+                    let mut low: Option<u64> = None;
+                    let mut high: Option<u64> = None;
+                    let mut origin: Option<usize> = None;
+
+                    while let Some(attr) = attrs.next()? {
+                        match (attr.name(), attr.value()) {
+                            (
+                                gimli::constants::DW_AT_low_pc,
+                                gimli::AttributeValue::Addr(addr),
+                            ) => {
+                                low = Some(addr);
+                            }
+                            (
+                                gimli::constants::DW_AT_high_pc,
+                                gimli::AttributeValue::Udata(data),
+                            ) => {
+                                high = Some(data);
+                            }
+                            (
+                                gimli::constants::DW_AT_abstract_origin,
+                                gimli::AttributeValue::UnitRef(offs),
+                            ) => origin = match offs
+                                .to_unit_section_offset(&unit)
+                            {
+                                gimli::UnitSectionOffset::DebugInfoOffset(
+                                    o,
+                                ) => Some(o.0),
+                                gimli::UnitSectionOffset::DebugTypesOffset(
+                                    o,
+                                ) => Some(o.0),
+                            },
+                            (
+                                gimli::constants::DW_AT_abstract_origin,
+                                gimli::AttributeValue::DebugInfoRef(offs),
+                            ) => {
+                                origin = Some(offs.0);
+                            }
+
+                            _ => {}
+                        }
+                    }
+
+                    match (low, high, origin) {
+                        (Some(addr), Some(len), Some(o)) => {
+                            self.inlined.insert((addr, depth), (len, o));
+                            continue;
+                        }
+                        (None, None, Some(_o)) => {}
+                        _ => {
+                            return Err(err(format!(
+                                "missing origin for GOFF 0x{:x}",
+                                goff
+                            )));
+                        }
+                    }
+
+                    let mut attrs = entry.attrs();
+                    while let Some(attr) = attrs.next()? {
+                        match (attr.name(), attr.value()) {
+                            (
+                                gimli::constants::DW_AT_ranges,
+                                gimli::AttributeValue::RangeListsRef(r),
+                            ) => {
+                                let raw_ranges = dwarf
+                                    .ranges
+                                    .raw_ranges(r, unit.encoding())?;
+                                let raw_ranges: Vec<_> =
+                                    raw_ranges.collect()?;
+
+                                for r in raw_ranges {
+                                    match r {
+                                        gimli::RawRngListEntry::
+                                          AddressOrOffsetPair { begin, end } => {
+                                            self.inlined.insert((begin, depth),
+                                                (end - begin, origin.unwrap()));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                continue 'outer;
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    return Err(err(format!(
+                        "missing address range for GOFF 0x{:x}",
+                        goff
+                    )));
+                }
+
                 if entry.tag() != gimli::constants::DW_TAG_subprogram {
                     continue;
                 }
@@ -297,6 +415,10 @@ impl Tockilator {
                         self.shortnames
                             .insert(String::from(ln), String::from(nn));
                     }
+                }
+
+                if let Some(nn) = name {
+                    self.subprograms.insert(goff, String::from(nn));
                 }
             }
         }
@@ -341,6 +463,7 @@ impl Tockilator {
             let inst = decode_inst(rv_isa::rv32, pc as u64, ibin as u64);
 
             let mut symbol: Option<TockilatorSymbol> = None;
+            let mut base = pc;
 
             if let Some(sym) = self.symbols.range(..=pc as u64).next_back() {
                 if (pc as u64) < *sym.0 + (sym.1).1 {
@@ -357,13 +480,39 @@ impl Tockilator {
                             demangle(name).to_string().into()
                         };
 
+                    base = *sym.0 as u32;
+
                     symbol = Some(TockilatorSymbol {
-                        addr: *sym.0 as u32,
+                        addr: base,
                         name: &(sym.1).0,
                         demangled,
                     });
                 }
             }
+
+            let mut inlined: Vec<TockilatorInlined> = vec![];
+
+            for ((addr, _depth), (len, goff)) in
+                self.inlined.range(..=(pc as u64, std::isize::MAX)).rev()
+            {
+                if addr + len < base as u64 {
+                    break;
+                }
+
+                if addr + len < pc as u64 {
+                    continue;
+                }
+
+                if let Some(func) = self.subprograms.get(goff) {
+                    inlined.push(TockilatorInlined {
+                        addr: *addr as u32,
+                        name: &func,
+                        id: *goff,
+                    });
+                }
+            }
+
+            inlined.reverse();
 
             callback(&TockilatorState {
                 line: lineno as u64,
@@ -377,11 +526,12 @@ impl Tockilator {
                 regs: &self.regs,
                 effects: &effects,
                 stack: &self.stack,
+                inlined: inlined.as_slice(),
             })?;
 
             match inst.op {
                 rv_op::jalr | rv_op::c_jalr | rv_op::jal | rv_op::c_jal => {
-                    self.stack.push(pc);
+                    self.stack.push((pc, inlined.len()));
                 }
                 rv_op::ret => {
                     self.stack.pop().or_else(|| panic!("underrun"));
@@ -428,7 +578,15 @@ mod tests {
         );
         assert_eq!(
             res,
-            Some((22, 6, 32896, 0x80006f, "jal", Some("x0,8088"), "x0=0x00000000"))
+            Some((
+                22,
+                6,
+                32896,
+                0x80006f,
+                "jal",
+                Some("x0,8088"),
+                "x0=0x00000000"
+            ))
         );
     }
 
