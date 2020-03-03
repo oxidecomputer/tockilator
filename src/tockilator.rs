@@ -240,6 +240,117 @@ impl Tockilator {
         Ok(())
     }
 
+    fn loadobj_dwarf_variable<R: gimli::Reader>(
+        &mut self,
+        _unit: &gimli::Unit<R>,
+        _entry: &gimli::DebuggingInformationEntry<R>,
+        _depth: isize,
+    ) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+
+    fn loadobj_dwarf_inlined<R: gimli::Reader<Offset = usize>>(
+        &mut self,
+        dwarf: &gimli::Dwarf<R>,
+        unit: &gimli::Unit<R>,
+        entry: &gimli::DebuggingInformationEntry<R>,
+        depth: isize,
+    ) -> Result<(), Box<dyn Error>> {
+        /*
+         * Iterate over our attributes looking for addresses
+         */
+        let mut attrs = entry.attrs();
+        let mut low: Option<u64> = None;
+        let mut high: Option<u64> = None;
+        let mut origin: Option<usize> = None;
+
+        let goff = match entry.offset().to_unit_section_offset(unit) {
+            gimli::UnitSectionOffset::DebugInfoOffset(o) => o.0,
+            gimli::UnitSectionOffset::DebugTypesOffset(o) => o.0,
+        };
+
+        while let Some(attr) = attrs.next()? {
+            match (attr.name(), attr.value()) {
+                (
+                    gimli::constants::DW_AT_low_pc,
+                    gimli::AttributeValue::Addr(addr),
+                ) => {
+                    low = Some(addr);
+                }
+                (
+                    gimli::constants::DW_AT_high_pc,
+                    gimli::AttributeValue::Udata(data),
+                ) => {
+                    high = Some(data);
+                }
+                (
+                    gimli::constants::DW_AT_abstract_origin,
+                    gimli::AttributeValue::UnitRef(offs),
+                ) => {
+                    origin = Some(match offs.to_unit_section_offset(unit) {
+                        gimli::UnitSectionOffset::DebugInfoOffset(o) => o.0,
+                        gimli::UnitSectionOffset::DebugTypesOffset(o) => o.0,
+                    });
+                }
+                (
+                    gimli::constants::DW_AT_abstract_origin,
+                    gimli::AttributeValue::DebugInfoRef(offs),
+                ) => {
+                    origin = Some(offs.0);
+                }
+                _ => {}
+            }
+        }
+
+        match (low, high, origin) {
+            (Some(addr), Some(len), Some(o)) => {
+                self.inlined.insert((addr, depth), (len, o));
+                return Ok(());
+            }
+            (None, None, Some(_o)) => {}
+            _ => {
+                return Err(err(format!(
+                    "missing origin for GOFF 0x{:?}",
+                    goff
+                )));
+            }
+        }
+
+        let mut attrs = entry.attrs();
+        while let Some(attr) = attrs.next()? {
+            match (attr.name(), attr.value()) {
+                (
+                    gimli::constants::DW_AT_ranges,
+                    gimli::AttributeValue::RangeListsRef(r),
+                ) => {
+                    let raw_ranges =
+                        dwarf.ranges.raw_ranges(r, unit.encoding())?;
+                    let raw_ranges: Vec<_> = raw_ranges.collect()?;
+
+                    for r in raw_ranges {
+                        match r {
+                            gimli::RawRngListEntry::AddressOrOffsetPair {
+                                begin,
+                                end,
+                            } => {
+                                self.inlined.insert(
+                                    (begin, depth),
+                                    (end - begin, origin.unwrap()),
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
+        Err(err(format!("missing address range for GOFF 0x{:?}", goff)))
+    }
+
     fn loadobj_dwarf(
         &mut self,
         buffer: &[u8],
@@ -286,7 +397,7 @@ impl Tockilator {
             let mut entries = unit.entries();
             let mut depth = 0;
 
-            'outer: while let Some((delta, entry)) = entries.next_dfs()? {
+            while let Some((delta, entry)) = entries.next_dfs()? {
                 let goff = match entry.offset().to_unit_section_offset(&unit) {
                     gimli::UnitSectionOffset::DebugInfoOffset(o) => o.0,
                     gimli::UnitSectionOffset::DebugTypesOffset(o) => o.0,
@@ -294,100 +405,14 @@ impl Tockilator {
 
                 depth += delta;
 
+                if entry.tag() == gimli::constants::DW_TAG_variable {
+                    self.loadobj_dwarf_variable(&unit, &entry, depth)?;
+                    continue;
+                }
+
                 if entry.tag() == gimli::constants::DW_TAG_inlined_subroutine {
-                    /*
-                     * Iterate over our attributes looking for addresses
-                     */
-                    let mut attrs = entry.attrs();
-                    let mut low: Option<u64> = None;
-                    let mut high: Option<u64> = None;
-                    let mut origin: Option<usize> = None;
-
-                    while let Some(attr) = attrs.next()? {
-                        match (attr.name(), attr.value()) {
-                            (
-                                gimli::constants::DW_AT_low_pc,
-                                gimli::AttributeValue::Addr(addr),
-                            ) => {
-                                low = Some(addr);
-                            }
-                            (
-                                gimli::constants::DW_AT_high_pc,
-                                gimli::AttributeValue::Udata(data),
-                            ) => {
-                                high = Some(data);
-                            }
-                            (
-                                gimli::constants::DW_AT_abstract_origin,
-                                gimli::AttributeValue::UnitRef(offs),
-                            ) => origin = match offs
-                                .to_unit_section_offset(&unit)
-                            {
-                                gimli::UnitSectionOffset::DebugInfoOffset(
-                                    o,
-                                ) => Some(o.0),
-                                gimli::UnitSectionOffset::DebugTypesOffset(
-                                    o,
-                                ) => Some(o.0),
-                            },
-                            (
-                                gimli::constants::DW_AT_abstract_origin,
-                                gimli::AttributeValue::DebugInfoRef(offs),
-                            ) => {
-                                origin = Some(offs.0);
-                            }
-
-                            _ => {}
-                        }
-                    }
-
-                    match (low, high, origin) {
-                        (Some(addr), Some(len), Some(o)) => {
-                            self.inlined.insert((addr, depth), (len, o));
-                            continue;
-                        }
-                        (None, None, Some(_o)) => {}
-                        _ => {
-                            return Err(err(format!(
-                                "missing origin for GOFF 0x{:x}",
-                                goff
-                            )));
-                        }
-                    }
-
-                    let mut attrs = entry.attrs();
-                    while let Some(attr) = attrs.next()? {
-                        match (attr.name(), attr.value()) {
-                            (
-                                gimli::constants::DW_AT_ranges,
-                                gimli::AttributeValue::RangeListsRef(r),
-                            ) => {
-                                let raw_ranges = dwarf
-                                    .ranges
-                                    .raw_ranges(r, unit.encoding())?;
-                                let raw_ranges: Vec<_> =
-                                    raw_ranges.collect()?;
-
-                                for r in raw_ranges {
-                                    match r {
-                                        gimli::RawRngListEntry::
-                                          AddressOrOffsetPair { begin, end } => {
-                                            self.inlined.insert((begin, depth),
-                                                (end - begin, origin.unwrap()));
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                                continue 'outer;
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    return Err(err(format!(
-                        "missing address range for GOFF 0x{:x}",
-                        goff
-                    )));
+                    self.loadobj_dwarf_inlined(&dwarf, &unit, &entry, depth)?;
+                    continue;
                 }
 
                 if entry.tag() != gimli::constants::DW_TAG_subprogram {
