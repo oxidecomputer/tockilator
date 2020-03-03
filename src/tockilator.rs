@@ -240,7 +240,7 @@ impl Tockilator {
         Ok(())
     }
 
-    fn loadobj_dwarf_variable<R: gimli::Reader>(
+    fn dwarf_variable<R: gimli::Reader>(
         &mut self,
         _unit: &gimli::Unit<R>,
         _entry: &gimli::DebuggingInformationEntry<R>,
@@ -249,7 +249,7 @@ impl Tockilator {
         Ok(())
     }
 
-    fn loadobj_dwarf_inlined<R: gimli::Reader<Offset = usize>>(
+    fn dwarf_inlined<R: gimli::Reader<Offset = usize>>(
         &mut self,
         dwarf: &gimli::Dwarf<R>,
         unit: &gimli::Unit<R>,
@@ -351,6 +351,50 @@ impl Tockilator {
         Err(err(format!("missing address range for GOFF 0x{:?}", goff)))
     }
 
+    fn dwarf_subprogram<'a, R: gimli::Reader<Offset = usize>>(
+        &mut self,
+        dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>>,
+        unit: &gimli::Unit<R>,
+        entry: &gimli::DebuggingInformationEntry<
+            gimli::EndianSlice<gimli::LittleEndian>,
+            usize,
+        >,
+    ) -> Result<(), Box<dyn Error>> {
+        let mut name = None;
+        let mut linkage_name = None;
+
+        let goff = match entry.offset().to_unit_section_offset(unit) {
+            gimli::UnitSectionOffset::DebugInfoOffset(o) => o.0,
+            gimli::UnitSectionOffset::DebugTypesOffset(o) => o.0,
+        };
+
+        // Iterate over the attributes in the DIE.
+        let mut attrs = entry.attrs();
+        while let Some(attr) = attrs.next()? {
+            match attr.name() {
+                gimli::constants::DW_AT_linkage_name => {
+                    linkage_name = dwarf_name(dwarf, attr.value());
+                }
+                gimli::constants::DW_AT_name => {
+                    name = dwarf_name(dwarf, attr.value());
+                }
+                _ => (),
+            }
+        }
+
+        if let (Some(nn), Some(ln)) = (name, linkage_name) {
+            if ln != nn {
+                self.shortnames.insert(String::from(ln), String::from(nn));
+            }
+        }
+
+        if let Some(nn) = name {
+            self.subprograms.insert(goff, String::from(nn));
+        }
+
+        Ok(())
+    }
+
     fn loadobj_dwarf(
         &mut self,
         buffer: &[u8],
@@ -398,55 +442,25 @@ impl Tockilator {
             let mut depth = 0;
 
             while let Some((delta, entry)) = entries.next_dfs()? {
-                let goff = match entry.offset().to_unit_section_offset(&unit) {
-                    gimli::UnitSectionOffset::DebugInfoOffset(o) => o.0,
-                    gimli::UnitSectionOffset::DebugTypesOffset(o) => o.0,
-                };
-
                 depth += delta;
 
-                if entry.tag() == gimli::constants::DW_TAG_variable {
-                    self.loadobj_dwarf_variable(&unit, &entry, depth)?;
-                    continue;
-                }
-
-                if entry.tag() == gimli::constants::DW_TAG_inlined_subroutine {
-                    self.loadobj_dwarf_inlined(&dwarf, &unit, &entry, depth)?;
-                    continue;
-                }
-
-                if entry.tag() != gimli::constants::DW_TAG_subprogram {
-                    continue;
-                }
-
-                let mut name = None;
-                let mut linkage_name = None;
-
-                // Iterate over the attributes in the DIE.
-                let mut attrs = entry.attrs();
-                while let Some(attr) = attrs.next()? {
-                    match attr.name() {
-                        gimli::constants::DW_AT_linkage_name => {
-                            linkage_name = dwarf_name(&dwarf, attr.value());
-                        }
-                        gimli::constants::DW_AT_name => {
-                            name = dwarf_name(&dwarf, attr.value());
-                        }
-                        _ => (),
+                match entry.tag() {
+                    gimli::constants::DW_TAG_variable => {
+                        self.dwarf_variable(&unit, &entry, depth)?;
                     }
-                }
-                if let (Some(nn), Some(ln)) = (name, linkage_name) {
-                    if ln != nn {
-                        self.shortnames
-                            .insert(String::from(ln), String::from(nn));
-                    }
-                }
 
-                if let Some(nn) = name {
-                    self.subprograms.insert(goff, String::from(nn));
+                    gimli::constants::DW_TAG_inlined_subroutine => {
+                        self.dwarf_inlined(&dwarf, &unit, &entry, depth)?;
+                    }
+
+                    gimli::constants::DW_TAG_subprogram => {
+                        self.dwarf_subprogram(&dwarf, &unit, &entry)?;
+                    }
+                    _ => {}
                 }
             }
         }
+
         Ok(())
     }
 
