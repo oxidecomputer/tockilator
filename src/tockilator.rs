@@ -22,12 +22,14 @@ const TOCKILATOR_REGPREFIX: &'static str = "x";
 
 #[derive(Debug, Default)]
 pub struct Tockilator {
-    symbols: BTreeMap<u64, (String, u64)>, // ELF symbols
-    shortnames: BTreeMap<String, String>,  // demangled names from DWARF
-    subprograms: BTreeMap<usize, String>,  // DWARF subprograms
+    symbols: BTreeMap<u64, (String, u64)>,  // ELF symbols
+    shortnames: BTreeMap<String, String>,   // demangled names from DWARF
+    subprograms: BTreeMap<usize, String>,   // DWARF subprograms
     inlined: BTreeMap<(u64, isize), (u64, usize)>, // inlined funcs by address
-    regs: [u32; TOCKILATOR_NREGS],         // current register state
-    stack: Vec<(u32, usize)>,              // current stack
+    parameters: BTreeMap<usize, String>,      // parameter names
+//    variables: BTreeMap<(u64, isize), (usize, gimli::Expression<R>)>,
+    regs: [u32; TOCKILATOR_NREGS],          // current register state
+    stack: Vec<(u32, usize)>,               // current stack
 }
 
 #[derive(Debug)]
@@ -240,12 +242,155 @@ impl Tockilator {
         Ok(())
     }
 
+    fn dwarf_expr<R: gimli::Reader<Offset = usize>>(
+        &mut self,
+        goff: usize,
+        origin: usize,
+        begin: u64,
+        len: u64,
+        data: &gimli::Expression<R>,
+        encoding: gimli::Encoding,
+    ) -> Result<(), Box<dyn Error>> {
+        println!("--> {:?}", data);
+        let mut pc = data.0.clone();
+
+        println!("len is {}", pc.len());
+
+        while pc.len() != 0 {
+            let mut op_pc = pc.clone();
+            let b = op_pc.read_u8()?;
+            let dwop = gimli::DwOp(b);
+
+            match gimli::Operation::parse(&mut pc, &data.0, encoding) {
+                Ok(op) => {
+                    println!("dwarf op is --> {:?}", dwop);
+                    println!("byte is {:x}, op is {:?}", b, op);
+                }
+                _ => {
+                    println!("shit");
+                }
+            }
+       }
+       Ok(())
+    }
+
     fn dwarf_variable<R: gimli::Reader>(
         &mut self,
         _unit: &gimli::Unit<R>,
         _entry: &gimli::DebuggingInformationEntry<R>,
         _depth: isize,
     ) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+
+    fn dwarf_formal_parameter<'a, R: gimli::Reader<Offset = usize>>(
+        &mut self,
+        dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>>,
+        unit: &gimli::Unit<R>,
+        entry: &gimli::DebuggingInformationEntry<
+            gimli::EndianSlice<gimli::LittleEndian>,
+            usize,
+        >,
+    ) -> Result<(), Box<dyn Error>> {
+        let mut origin: Option<usize> = None;
+        let mut attrs = entry.attrs();
+        let mut name = None;
+
+        let goff = match entry.offset().to_unit_section_offset(unit) {
+            gimli::UnitSectionOffset::DebugInfoOffset(o) => o.0,
+            gimli::UnitSectionOffset::DebugTypesOffset(o) => o.0,
+        };
+
+        println!("GOFF 0x{:x}", goff);
+
+        while let Some(attr) = attrs.next()? {
+            match (attr.name(), attr.value()) {
+                (gimli::DW_AT_name, _) => {
+                    name = dwarf_name(dwarf, attr.value());
+                }
+                (
+                    gimli::DW_AT_abstract_origin,
+                    gimli::AttributeValue::UnitRef(offset),
+                ) => {
+                    origin = Some(match offset.to_unit_section_offset(unit) {
+                        gimli::UnitSectionOffset::DebugInfoOffset(o) => o.0,
+                        gimli::UnitSectionOffset::DebugTypesOffset(o) => o.0,
+                    });
+                }
+                (
+                    gimli::DW_AT_abstract_origin,
+                    gimli::AttributeValue::DebugInfoRef(offset),
+                ) => {
+                    origin = Some(offset.0);
+                }
+                (
+                    gimli::DW_AT_abstract_origin,
+                    _,
+                ) => {
+                    return Err(err(format!("bad origin for GOFF 0x{:x}", goff)));
+                }
+                 _ => {}
+            }
+        }
+
+        match (origin, name) {
+            (Some(_), Some(_)) => {
+                return Err(err(format!(
+                    "found both origin and name for GOFF 0x{:x}",
+                    goff
+                )));
+            }
+            
+            (Some(_), None) => {}
+            (None, None) => { return Ok(()); }
+
+            (None, Some(name)) => {
+                self.parameters.insert(goff, String::from(name));
+                return Ok(());
+            }
+        }
+
+        let mut attrs = entry.attrs();
+
+        println!("origin is {:?}", origin);
+
+        while let Some(attr) = attrs.next()? {
+            match (attr.name(), attr.value()) {
+                (
+                    gimli::DW_AT_location,
+                    gimli::AttributeValue::LocationListsRef(offset),
+                ) => {
+                    println!("have location: {:?}", offset);
+
+                    let raw_locations =
+                        dwarf.locations.raw_locations(offset, unit.encoding())?;
+
+                    let raw_locations: Vec<_> = raw_locations.collect()?;
+
+                    for location in raw_locations {
+                        match location {
+                            gimli::RawLocListEntry::AddressOrOffsetPair {
+                                begin,
+                                end,
+                                ref data,
+                            } => {
+                                self.dwarf_expr(goff, origin.unwrap(),
+                                    begin, end - begin, data, unit.encoding())?;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                (
+                    gimli::DW_AT_location,
+                    _,
+                ) => {
+                    println!("whaaat?! {:?}", attr.value());
+                }
+                _ => {}
+            }
+        }
+
         Ok(())
     }
 
@@ -445,6 +590,10 @@ impl Tockilator {
                 depth += delta;
 
                 match entry.tag() {
+                    gimli::constants::DW_TAG_formal_parameter => {
+                        self.dwarf_formal_parameter(&dwarf, &unit, &entry)?;
+                    }
+
                     gimli::constants::DW_TAG_variable => {
                         self.dwarf_variable(&unit, &entry, depth)?;
                     }
