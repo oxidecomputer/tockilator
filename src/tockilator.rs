@@ -25,9 +25,10 @@ pub struct Tockilator {
     symbols: BTreeMap<u64, (String, u64)>,  // ELF symbols
     shortnames: BTreeMap<String, String>,   // demangled names from DWARF
     subprograms: BTreeMap<usize, String>,   // DWARF subprograms
+    outlined: BTreeMap<u64, usize>,         // outlined functions by address
     inlined: BTreeMap<(u64, isize), (u64, usize)>, // inlined funcs by address
-    parameters: BTreeMap<usize, String>,      // parameter names
-//    variables: BTreeMap<(u64, isize), (usize, gimli::Expression<R>)>,
+    parameters: BTreeMap<usize, (String, usize)>,      // parameter names
+    expressions: BTreeMap<(u64, usize), (u64, usize, Vec<u8>)>,
     regs: [u32; TOCKILATOR_NREGS],          // current register state
     stack: Vec<(u32, usize)>,               // current stack
 }
@@ -44,6 +45,14 @@ pub struct TockilatorSymbol<'a> {
     pub addr: u32,
     pub name: &'a str,
     pub demangled: Cow<'a, str>,
+}
+
+#[derive(Debug)]
+pub struct TockilatorVariable<'a> {
+    /// identifier of this variable
+    pub id: usize,
+    /// name of this variable
+    pub name: &'a str,
 }
 
 #[derive(Debug)]
@@ -73,6 +82,7 @@ pub struct TockilatorState<'a> {
     pub stack: &'a [(u32, usize)],
     /// Inlined stack
     pub inlined: &'a [TockilatorInlined<'a>],
+    pub params: &'a [TockilatorVariable<'a>],
 }
 
 #[derive(Debug)]
@@ -249,12 +259,14 @@ impl Tockilator {
         begin: u64,
         len: u64,
         data: &gimli::Expression<R>,
-        encoding: gimli::Encoding,
     ) -> Result<(), Box<dyn Error>> {
-        println!("--> {:?}", data);
-        let mut pc = data.0.clone();
+        let v: Vec<u8> = data.0.to_slice()?.iter().map(|&x| x).collect();
+        self.expressions.insert((begin, goff), (len, origin, v));
 
-        println!("len is {}", pc.len());
+/*
+//        for i in data.0.len() {
+ //           println!("{:?}", i);
+  //      }
 
         while pc.len() != 0 {
             let mut op_pc = pc.clone();
@@ -271,6 +283,8 @@ impl Tockilator {
                 }
             }
        }
+       */
+
        Ok(())
     }
 
@@ -291,6 +305,7 @@ impl Tockilator {
             gimli::EndianSlice<gimli::LittleEndian>,
             usize,
         >,
+        parent: Option<usize>,
     ) -> Result<(), Box<dyn Error>> {
         let mut origin: Option<usize> = None;
         let mut attrs = entry.attrs();
@@ -300,8 +315,6 @@ impl Tockilator {
             gimli::UnitSectionOffset::DebugInfoOffset(o) => o.0,
             gimli::UnitSectionOffset::DebugTypesOffset(o) => o.0,
         };
-
-        println!("GOFF 0x{:x}", goff);
 
         while let Some(attr) = attrs.next()? {
             match (attr.name(), attr.value()) {
@@ -333,26 +346,37 @@ impl Tockilator {
             }
         }
 
-        match (origin, name) {
-            (Some(_), Some(_)) => {
+        match (origin, name, parent) {
+            (Some(_), Some(_), _) => {
                 return Err(err(format!(
                     "found both origin and name for GOFF 0x{:x}",
                     goff
                 )));
             }
             
-            (Some(_), None) => {}
-            (None, None) => { return Ok(()); }
+            (Some(_), None, _) => {}
 
-            (None, Some(name)) => {
-                self.parameters.insert(goff, String::from(name));
-                return Ok(());
+            (None, None, _) => { return Ok(()); }
+
+            (None, Some(name), Some(parent)) => {
+                /*
+                 * We have a name: insert this parameter, and set our origin to
+                 * be ourselves to handle the case that we are a simple formal
+                 * parameter in a non-inlined function.
+                 */
+                self.parameters.insert(goff, (String::from(name), parent));
+                origin = Some(goff);
+            }
+
+            (None, Some(name), None) => {
+                return Err(err(format!(
+                    "missing parent for GOFF 0x{:x}",
+                    goff
+                )));
             }
         }
 
         let mut attrs = entry.attrs();
-
-        println!("origin is {:?}", origin);
 
         while let Some(attr) = attrs.next()? {
             match (attr.name(), attr.value()) {
@@ -360,8 +384,6 @@ impl Tockilator {
                     gimli::DW_AT_location,
                     gimli::AttributeValue::LocationListsRef(offset),
                 ) => {
-                    println!("have location: {:?}", offset);
-
                     let raw_locations =
                         dwarf.locations.raw_locations(offset, unit.encoding())?;
 
@@ -375,7 +397,7 @@ impl Tockilator {
                                 ref data,
                             } => {
                                 self.dwarf_expr(goff, origin.unwrap(),
-                                    begin, end - begin, data, unit.encoding())?;
+                                    begin, end - begin, data)?;
                             }
                             _ => {}
                         }
@@ -507,6 +529,7 @@ impl Tockilator {
     ) -> Result<(), Box<dyn Error>> {
         let mut name = None;
         let mut linkage_name = None;
+        let mut addr = None;
 
         let goff = match entry.offset().to_unit_section_offset(unit) {
             gimli::UnitSectionOffset::DebugInfoOffset(o) => o.0,
@@ -517,13 +540,23 @@ impl Tockilator {
         let mut attrs = entry.attrs();
         while let Some(attr) = attrs.next()? {
             match attr.name() {
+                gimli::constants::DW_AT_low_pc => {
+                    addr = match attr.value() {
+                        gimli::AttributeValue::Addr(addr) => Some(addr),
+                        _ => {
+                            return Err(err(format!(
+                                "unknown DW_AT_low_pc for GOFF 0x{:x}", goff
+                            )));
+                        }
+                    }
+                }
                 gimli::constants::DW_AT_linkage_name => {
                     linkage_name = dwarf_name(dwarf, attr.value());
                 }
                 gimli::constants::DW_AT_name => {
                     name = dwarf_name(dwarf, attr.value());
                 }
-                _ => (),
+                _ => {}
             }
         }
 
@@ -535,6 +568,12 @@ impl Tockilator {
 
         if let Some(nn) = name {
             self.subprograms.insert(goff, String::from(nn));
+
+            if let Some(addr) = addr {
+                if addr != 0 {
+                    self.outlined.insert(addr, goff);
+                }
+            }
         }
 
         Ok(())
@@ -585,13 +624,30 @@ impl Tockilator {
             // Iterate over the Debugging Information Entries (DIEs) in the unit.
             let mut entries = unit.entries();
             let mut depth = 0;
+            let mut last: Option<(isize, usize)> = None;
 
             while let Some((delta, entry)) = entries.next_dfs()? {
                 depth += delta;
 
+                if let Some((lastdepth, lastsub)) = last {
+                    if depth <= lastdepth {
+                        last = None;
+                    }
+                }
+
+                let goff = match entry.offset().to_unit_section_offset(&unit) {
+                    gimli::UnitSectionOffset::DebugInfoOffset(o) => o.0,
+                    gimli::UnitSectionOffset::DebugTypesOffset(o) => o.0,
+                };
+
                 match entry.tag() {
                     gimli::constants::DW_TAG_formal_parameter => {
-                        self.dwarf_formal_parameter(&dwarf, &unit, &entry)?;
+                        self.dwarf_formal_parameter(&dwarf, &unit, &entry,
+                            match last {
+                                Some((_, parent)) => Some(parent),
+                                _ => None
+                            }
+                        )?;
                     }
 
                     gimli::constants::DW_TAG_variable => {
@@ -603,6 +659,7 @@ impl Tockilator {
                     }
 
                     gimli::constants::DW_TAG_subprogram => {
+                        last = Some((depth, goff));
                         self.dwarf_subprogram(&dwarf, &unit, &entry)?;
                     }
                     _ => {}
@@ -653,6 +710,8 @@ impl Tockilator {
             let mut symbol: Option<TockilatorSymbol> = None;
             let mut base = pc;
 
+            let mut params = vec![];
+
             if let Some(sym) = self.symbols.range(..=pc as u64).next_back() {
                 if (pc as u64) < *sym.0 + (sym.1).1 {
                     let name = &(sym.1).0;
@@ -702,6 +761,55 @@ impl Tockilator {
 
             inlined.reverse();
 
+            if let Some(me) = self.outlined.get(&(pc as u64)) {
+                println!("{:x} is goff {:x}", pc, me);
+            }
+
+            for ((addr, goff), (len, origin, expr)) in
+                self.expressions.range(..=(pc as u64, std::usize::MAX)).rev()
+            {
+                if *addr + len < base as u64 {
+                    break;
+                }
+
+                if *addr + len < pc as u64 {
+                    continue;
+                }
+
+                if let Some((param, parent)) = self.parameters.get(origin) {
+                    /*
+                     * We have an expression that is valid that is a parameter.
+                     * Now we need to see if the parameter's parent (that is,
+                     * its subprogram) corresponds to our current PC.
+                     */
+                    if let Some(me) = self.outlined.get(&(pc as u64)) {
+                        if parent == me {
+                            params.push(TockilatorVariable {
+                                id: *origin,
+                                name: param,
+                            });
+                        }
+                    }
+/*
+                            println!("WINNER --> param {} (goff 0x{:x}, origin 0x{:x}, addr {:x}, len {}, parent {:x})",
+                        param, goff, origin, addr, len, parent);
+                        }
+                    }
+
+*/
+                    for inline in inlined.iter_mut() {
+                        if *parent == inline.id {
+                            println!("INLINE WINNER --> param {} (goff 0x{:x}, origin 0x{:x}, addr {:x}, len {}, parent {:x})",
+                        param, goff, origin, addr, len, parent);
+/*
+                            let v = Box::new(vec![]);
+                            inline.params = Some(&v);
+*/
+                        }
+                    }
+                }
+            }
+
             callback(&TockilatorState {
                 line: lineno as u64,
                 time,
@@ -715,6 +823,7 @@ impl Tockilator {
                 effects: &effects,
                 stack: &self.stack,
                 inlined: inlined.as_slice(),
+                params: &params,
             })?;
 
             match inst.op {
