@@ -82,13 +82,16 @@ fn flowtrace(
             );
 
             for param in state.params.iter() {
+                let r = state.evaluate(param.expr)?;
+
                 println!(
-                    "{} {:ident$}   ( {}=",
+                    "{} {:ident$}   ( {}={:?}",
                     state.cycle,
                     "",
-                    param.name,
+                    param.name, r,
                     ident = ident
                 );
+
             }
 
             output = true;

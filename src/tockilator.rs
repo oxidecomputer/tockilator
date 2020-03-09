@@ -214,6 +214,50 @@ fn parse_verilator_effects(
     Ok(Some((reg, val)))
 }
 
+impl TockilatorState<'_> {
+    pub fn evaluate(&self, expr: &[u8]) -> Result<Vec<u32>, Box<dyn Error>> {
+        let bytes = gimli::EndianSlice::new(expr, gimli::LittleEndian);
+
+        let encoding = gimli::Encoding {
+            format: gimli::Format::Dwarf32,
+            version: 4,
+            address_size: 4
+        };
+
+        let mut eval = gimli::Evaluation::new(bytes, encoding);
+        let mut rval: Vec<u32> = vec![];
+
+        let result = eval.evaluate()?;
+
+        if result == gimli::EvaluationResult::Complete {
+            let result = eval.result();
+
+            for piece in result.iter() {
+                match piece.location {
+                    gimli::Location::Register { register } => {
+                        let gimli::Register(r) = register;
+                        rval.push(self.regs[r as usize]);
+                    }
+
+                    _ => { println!("piece: {:?}", piece); }
+                }
+            }
+
+/*
+            println!("eval {:?}: result: {:?}: length: {:?}", bytes, result,
+                eval.result().len());
+*/
+
+            return Ok(rval);
+        }
+
+        println!("eval {:?}: result: {:?}: eval: {:?}", bytes, result,
+            eval);
+
+        Ok(rval)
+    }
+}
+
 impl Tockilator {
     pub fn loadobj(
         &mut self,
