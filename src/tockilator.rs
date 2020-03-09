@@ -5,6 +5,7 @@
 use fallible_iterator::FallibleIterator;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::error::Error;
 use std::fmt;
@@ -38,6 +39,7 @@ pub struct TockilatorInlined<'a> {
     pub addr: u32,
     pub name: &'a str,
     pub id: usize,
+    // pub params: &'a [TockilatorVariable<'a>],
 }
 
 #[derive(Debug)]
@@ -53,6 +55,8 @@ pub struct TockilatorVariable<'a> {
     pub id: usize,
     /// name of this variable
     pub name: &'a str,
+    /// expression for this variable
+    pub expr: &'a [u8],
 }
 
 #[derive(Debug)]
@@ -82,7 +86,10 @@ pub struct TockilatorState<'a> {
     pub stack: &'a [(u32, usize)],
     /// Inlined stack
     pub inlined: &'a [TockilatorInlined<'a>],
+    /// Parameters 
     pub params: &'a [TockilatorVariable<'a>],
+    /// Inlined parameters
+    pub iparams: &'a HashMap<usize, Vec<TockilatorVariable<'a>>>,
 }
 
 #[derive(Debug)]
@@ -738,6 +745,9 @@ impl Tockilator {
             }
 
             let mut inlined: Vec<TockilatorInlined> = vec![];
+            let mut iparams: HashMap<usize, Vec<TockilatorVariable>>;
+
+            iparams = HashMap::new();
 
             for ((addr, _depth), (len, goff)) in
                 self.inlined.range(..=(pc as u64, std::isize::MAX)).rev()
@@ -757,14 +767,16 @@ impl Tockilator {
                         id: *goff,
                     });
                 }
+
+                iparams.insert(*goff, Vec::new());
             }
 
             inlined.reverse();
 
-            if let Some(me) = self.outlined.get(&(pc as u64)) {
-                println!("{:x} is goff {:x}", pc, me);
-            }
-
+            /*
+             * Now go through all of our expressions and find the ones that
+             * are valid for our pc.
+             */
             for ((addr, goff), (len, origin, expr)) in
                 self.expressions.range(..=(pc as u64, std::usize::MAX)).rev()
             {
@@ -785,26 +797,23 @@ impl Tockilator {
                     if let Some(me) = self.outlined.get(&(pc as u64)) {
                         if parent == me {
                             params.push(TockilatorVariable {
-                                id: *origin,
+                                id: *goff,
                                 name: param,
+                                expr: expr,
                             });
                         }
                     }
-/*
-                            println!("WINNER --> param {} (goff 0x{:x}, origin 0x{:x}, addr {:x}, len {}, parent {:x})",
-                        param, goff, origin, addr, len, parent);
-                        }
-                    }
 
-*/
-                    for inline in inlined.iter_mut() {
+                    for inline in inlined.iter() {
                         if *parent == inline.id {
-                            println!("INLINE WINNER --> param {} (goff 0x{:x}, origin 0x{:x}, addr {:x}, len {}, parent {:x})",
-                        param, goff, origin, addr, len, parent);
-/*
-                            let v = Box::new(vec![]);
-                            inline.params = Some(&v);
-*/
+                            iparams.get_mut(&inline.id)
+                                .unwrap()
+                                .push(TockilatorVariable {
+                                    id: *goff,
+                                    name: param,
+                                    expr: expr,
+                                }
+                            );
                         }
                     }
                 }
@@ -824,6 +833,7 @@ impl Tockilator {
                 stack: &self.stack,
                 inlined: inlined.as_slice(),
                 params: &params,
+                iparams: &iparams,
             })?;
 
             match inst.op {

@@ -19,7 +19,16 @@ fn dump(state: &TockilatorState) -> Result<(), Box<dyn Error>> {
         if offset == 0 {
             symbol = format!("{}", sym.demangled)
         } else {
-            symbol = format!("{}+0x{:x}", sym.demangled, offset)
+            if state.inlined.len() != 0 {
+                symbol = format!(
+                    "{}+0x{:x} ({})",
+                    sym.demangled,
+                    offset,
+                    state.inlined.last().unwrap().name
+                );
+            } else {
+                symbol = format!("{}+0x{:x}", sym.demangled, offset)
+            }
         }
     };
 
@@ -71,6 +80,17 @@ fn flowtrace(
                 },
                 ident = ident,
             );
+
+            for param in state.params.iter() {
+                println!(
+                    "{} {:ident$}   ( {}=",
+                    state.cycle,
+                    "",
+                    param.name,
+                    ident = ident
+                );
+            }
+
             output = true;
         }
 
@@ -88,6 +108,19 @@ fn flowtrace(
                 state.inlined[i].name,
                 ident = ident,
             );
+
+            if let Some(params) = state.iparams.get(&state.inlined[i].id) {
+                for param in params.iter() {
+                    println!(
+                        "{} {:ident$}   ( {}={:?}",
+                        state.cycle,
+                        "",
+                        param.name, param.expr,
+                        ident = ident,
+                    );
+                }
+            }
+
             output = true;
         }
 
