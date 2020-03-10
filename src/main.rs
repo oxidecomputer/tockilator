@@ -54,6 +54,27 @@ fn dump(state: &TockilatorState) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn dump_param(
+    state: &TockilatorState,
+    param: &TockilatorVariable,
+    ident: usize,
+) -> Result<(), Box<dyn Error>> {
+    let vals = state.evaluate(param.expr)?;
+
+    print!("{} {:ident$}   ( {}=", state.cycle, "", param.name, ident = ident);
+
+    let mut sep = "";
+
+    for v in vals {
+        print!("{}0x{:x}", sep, v);
+        sep = ", ";
+    }
+
+    println!("");
+
+    Ok(())
+}
+
 fn flowtrace(
     tockilator: &mut Tockilator,
     file: &str,
@@ -82,16 +103,7 @@ fn flowtrace(
             );
 
             for param in state.params.iter() {
-                let r = state.evaluate(param.expr)?;
-
-                println!(
-                    "{} {:ident$}   ( {}={:?}",
-                    state.cycle,
-                    "",
-                    param.name, r,
-                    ident = ident
-                );
-
+                dump_param(state, param, ident)?;
             }
 
             output = true;
@@ -114,13 +126,7 @@ fn flowtrace(
 
             if let Some(params) = state.iparams.get(&state.inlined[i].id) {
                 for param in params.iter() {
-                    println!(
-                        "{} {:ident$}   ( {}={:?}",
-                        state.cycle,
-                        "",
-                        param.name, param.expr,
-                        ident = ident,
-                    );
+                    dump_param(state, param, ident)?;
                 }
             }
 

@@ -227,32 +227,44 @@ impl TockilatorState<'_> {
         let mut eval = gimli::Evaluation::new(bytes, encoding);
         let mut rval: Vec<u32> = vec![];
 
-        let result = eval.evaluate()?;
+        let mut result = eval.evaluate()?;
 
-        if result == gimli::EvaluationResult::Complete {
-            let result = eval.result();
+        while result != gimli::EvaluationResult::Complete {
+            match result {
+                gimli::EvaluationResult::RequiresRegister {
+                    register,
+                    base_type
+                } => {
+                    let gimli::Register(r) = register;
+                    let val = gimli::Value::Generic(self.regs[r as usize].into());
 
-            for piece in result.iter() {
-                match piece.location {
-                    gimli::Location::Register { register } => {
-                        let gimli::Register(r) = register;
-                        rval.push(self.regs[r as usize]);
-                    }
-
-                    _ => { println!("piece: {:?}", piece); }
+                    result = eval.resume_with_register(val)?;
+                }
+                _ => {
+                    return Err(err(format!(
+                        "unrecognized eval bail: {:?}", result
+                    )));
                 }
             }
+        }
+
+        let result = eval.result();
+
+        for piece in result.iter() {
+            match piece.location {
+                gimli::Location::Register { register } => {
+                    let gimli::Register(r) = register;
+                    rval.push(self.regs[r as usize]);
+                }
+
+                _ => { println!("piece: {:?}", piece); }
+            }
+        }
 
 /*
             println!("eval {:?}: result: {:?}: length: {:?}", bytes, result,
                 eval.result().len());
 */
-
-            return Ok(rval);
-        }
-
-        println!("eval {:?}: result: {:?}: eval: {:?}", bytes, result,
-            eval);
 
         Ok(rval)
     }
