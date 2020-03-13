@@ -215,7 +215,10 @@ fn parse_verilator_effects(
 }
 
 impl TockilatorState<'_> {
-    pub fn evaluate(&self, expr: &[u8]) -> Result<Vec<u32>, Box<dyn Error>> {
+    pub fn evaluate(
+        &self,
+        expr: &[u8]
+    ) -> Result<Option<Vec<u32>>, Box<dyn Error>> {
         let bytes = gimli::EndianSlice::new(expr, gimli::LittleEndian);
 
         let encoding = gimli::Encoding {
@@ -233,12 +236,20 @@ impl TockilatorState<'_> {
             match result {
                 gimli::EvaluationResult::RequiresRegister {
                     register,
-                    base_type
+                    base_type: _,
                 } => {
                     let gimli::Register(r) = register;
                     let val = gimli::Value::Generic(self.regs[r as usize].into());
 
                     result = eval.resume_with_register(val)?;
+                }
+                gimli::EvaluationResult::RequiresMemory {
+                    address: _,
+                    size: _,
+                    space: _,
+                    base_type: _,
+                } => {
+                    return Ok(None);
                 }
                 _ => {
                     return Err(err(format!(
@@ -257,16 +268,17 @@ impl TockilatorState<'_> {
                     rval.push(self.regs[r as usize]);
                 }
 
+                gimli::Location::Value { value } => {
+                    rval.push(value.to_u64(0xffff_ffff)? as u32);
+                }
+
+                gimli::Location::Empty => {}
+
                 _ => { println!("piece: {:?}", piece); }
             }
         }
 
-/*
-            println!("eval {:?}: result: {:?}: length: {:?}", bytes, result,
-                eval.result().len());
-*/
-
-        Ok(rval)
+        Ok(Some(rval))
     }
 }
 

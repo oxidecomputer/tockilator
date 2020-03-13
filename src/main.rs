@@ -59,18 +59,24 @@ fn dump_param(
     param: &TockilatorVariable,
     ident: usize,
 ) -> Result<(), Box<dyn Error>> {
-    let vals = state.evaluate(param.expr)?;
+    let result = state.evaluate(param.expr)?;
 
     print!("{} {:ident$}   ( {}=", state.cycle, "", param.name, ident = ident);
 
-    let mut sep = "";
+    match result {
+        None => {
+            println!("<unknown>");
+        }
+        Some(vals) => {
+            let mut sep = "";
 
-    for v in vals {
-        print!("{}0x{:x}", sep, v);
-        sep = ", ";
+            for v in vals {
+                print!("{}0x{:x}", sep, v);
+                sep = ", ";
+            }
+            println!("");
+        }
     }
-
-    println!("");
 
     Ok(())
 }
