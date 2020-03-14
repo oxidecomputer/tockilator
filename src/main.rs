@@ -61,7 +61,13 @@ fn dump_param(
 ) -> Result<(), Box<dyn Error>> {
     let result = state.evaluate(param.expr)?;
 
-    print!("{} {:ident$}   ( {}=", state.cycle, "", param.name, ident = ident);
+    print!(
+        "{} {:ident$}   ( {}=",
+        state.cycle,
+        "",
+        param.name,
+        ident = ident
+    );
 
     match result {
         None => {
@@ -87,7 +93,7 @@ fn flowtrace(
     matches: &clap::ArgMatches,
 ) -> Result<(), Box<dyn Error>> {
     let mut entry = true;
-    let mut inlined: Vec<usize> = vec![];
+    let mut inlined: Vec<TockilatorGoff> = vec![];
 
     tockilator.tracefile(file, |state| -> Result<(), Box<dyn Error>> {
         let f: &str = &format!("{:x}", state.pc);
