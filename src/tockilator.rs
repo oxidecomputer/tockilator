@@ -17,6 +17,7 @@ use std::str;
 use disc_v::*;
 use goblin::elf::Elf;
 use rustc_demangle::demangle;
+use multimap::MultiMap;
 
 pub const TOCKILATOR_NREGS: usize = 32;
 const TOCKILATOR_REGPREFIX: &'static str = "x";
@@ -29,8 +30,11 @@ pub struct Tockilator {
     subprograms: BTreeMap<TockilatorGoff, String>,   // DWARF subprograms
     outlined: BTreeMap<u64, TockilatorGoff>, // outlined functions by address
 
-    // Mapping from starting address to length and goff
-    inlined: BTreeMap<(u64, isize), (u64, TockilatorGoff)>,
+    // Mapping from starting address to length, goff and origin
+    inlined: BTreeMap<(u64, isize), (u64, TockilatorGoff, TockilatorGoff)>,
+
+    // Mapping from goff to starting address and length
+    bygoff: MultiMap<TockilatorGoff, (u64, u64)>,
 
     // Mapping from goff to name of parameter and goff of concrete parent
     parameters: BTreeMap<TockilatorGoff, (String, TockilatorGoff)>,
@@ -56,6 +60,7 @@ pub struct TockilatorInlined<'a> {
     pub addr: u32,
     pub name: &'a str,
     pub id: TockilatorGoff,
+    pub origin: TockilatorGoff,
     // pub params: &'a [TockilatorVariable<'a>],
 }
 
@@ -435,7 +440,7 @@ impl Tockilator {
             gimli::EndianSlice<gimli::LittleEndian>,
             usize,
         >,
-        parent: Option<TockilatorGoff>,
+        parent: TockilatorGoff,
     ) -> Result<(), Box<dyn Error>> {
         let mut origin: Option<TockilatorGoff> = None;
         let mut attrs = entry.attrs();
@@ -459,18 +464,18 @@ impl Tockilator {
             }
         }
 
-        match (origin, name, parent) {
-            (Some(_), Some(_), _) => {
+        match (origin, name) {
+            (Some(_), Some(_)) => {
                 return Err(err(format!(
                     "found both origin and name for {}", goff
                 )));
             }
             
-            (Some(_), None, _) => {}
+            (Some(_), None) => {}
 
-            (None, None, _) => { return Ok(()); }
+            (None, None) => { return Ok(()); }
 
-            (None, Some(name), Some(parent)) => {
+            (None, Some(name)) => {
                 /*
                  * We have a name: insert this parameter, and set our origin to
                  * be ourselves to handle the case that we are a simple formal
@@ -478,10 +483,6 @@ impl Tockilator {
                  */
                 self.parameters.insert(goff, (String::from(name), parent));
                 origin = Some(goff);
-            }
-
-            (None, Some(name), None) => {
-                return Err(err(format!("missing parent for {}", goff)));
             }
         }
 
@@ -512,20 +513,32 @@ impl Tockilator {
                         }
                     }
                 }
-/*
                 (
                     gimli::DW_AT_location,
-                    gimli::AttributeValue::Exprloc(value),
+                    gimli::AttributeValue::Exprloc(data),
                 ) => {
-                    self.dwarf_
-                }
-*/
-                (
-                    gimli::DW_AT_location,
-                    _,
-                ) => {
-                    println!("whaaat?! {} {} parent {} {:?}", goff,
-origin.unwrap(), parent.unwrap(), attr.value());
+                    /*
+                     * We need to look up our parent goff, and then add an
+                     * expression for every address range we find.
+                     */
+                    match self.bygoff.get_vec(&parent) {
+                        Some(ranges) => {
+                            for range in ranges.iter() {
+                                let v: Vec<u8> = data.0.iter()
+                                    .map(|&x| x).collect();
+                                self.expressions.insert(
+                                    (range.0, goff),
+                                    (range.1, origin.unwrap(), v)
+                                );
+                            }
+                        }
+                        None => {
+                            return Err(err(format!(
+                                "goff {}: missing parent {}", goff, parent
+                            )));
+                        }
+                    };
+
                 }
                 _ => {}
             }
@@ -580,7 +593,8 @@ origin.unwrap(), parent.unwrap(), attr.value());
 
         match (low, high, origin) {
             (Some(addr), Some(len), Some(origin)) => {
-                self.inlined.insert((addr, depth), (len, origin));
+                self.inlined.insert((addr, depth), (len, goff, origin));
+                self.bygoff.insert(goff, (addr, len));
                 return Ok(());
             }
             (None, None, Some(_o)) => {}
@@ -608,8 +622,9 @@ origin.unwrap(), parent.unwrap(), attr.value());
                             } => {
                                 self.inlined.insert(
                                     (begin, depth),
-                                    (end - begin, origin.unwrap()),
+                                    (end - begin, goff, origin.unwrap()),
                                 );
+                                self.bygoff.insert(goff, (begin, end - begin));
                             }
                             _ => {}
                         }
@@ -636,6 +651,7 @@ origin.unwrap(), parent.unwrap(), attr.value());
         let mut name = None;
         let mut linkage_name = None;
         let mut addr = None;
+        let mut len = None;
 
         let goff = self.dwarf_goff(unit, entry);
 
@@ -649,6 +665,16 @@ origin.unwrap(), parent.unwrap(), attr.value());
                         _ => {
                             return Err(err(format!(
                                 "unknown DW_AT_low_pc for {}", goff
+                            )));
+                        }
+                    }
+                }
+                gimli::constants::DW_AT_high_pc => {
+                    len = match attr.value() {
+                        gimli::AttributeValue::Udata(data) => Some(data),
+                        _ => {
+                            return Err(err(format!(
+                                "unknown DW_AT_high_pc for {}", goff
                             )));
                         }
                     }
@@ -677,6 +703,10 @@ origin.unwrap(), parent.unwrap(), attr.value());
                     self.outlined.insert(addr, goff);
                 }
             }
+        }
+
+        if let (Some(addr), Some(len)) = (addr, len) {
+            self.bygoff.insert(goff, (addr, len));
         }
 
         Ok(())
@@ -743,7 +773,7 @@ origin.unwrap(), parent.unwrap(), attr.value());
                 match entry.tag() {
                     gimli::constants::DW_TAG_formal_parameter => {
                         self.dwarf_formal_parameter(&dwarf, &unit, &entry,
-                            Some(stack[(depth - 1) as usize])
+                            stack[(depth - 1) as usize]
                         )?;
                     }
 
@@ -838,22 +868,23 @@ origin.unwrap(), parent.unwrap(), attr.value());
 
             iparams = HashMap::new();
 
-            for ((addr, _depth), (len, goff)) in
+            for ((addr, _depth), (len, goff, origin)) in
                 self.inlined.range(..=(pc as u64, std::isize::MAX)).rev()
             {
                 if addr + len < base as u64 {
                     break;
                 }
 
-                if addr + len < pc as u64 {
+                if addr + len <= pc as u64 {
                     continue;
                 }
 
-                if let Some(func) = self.subprograms.get(goff) {
+                if let Some(func) = self.subprograms.get(origin) {
                     inlined.push(TockilatorInlined {
                         addr: *addr as u32,
                         name: &func,
                         id: *goff,
+                        origin: *origin,
                     });
                 }
 
@@ -880,7 +911,7 @@ origin.unwrap(), parent.unwrap(), attr.value());
                     break;
                 }
 
-                if *addr + len < pc as u64 {
+                if *addr + len <= pc as u64 {
                     continue;
                 }
 
@@ -901,7 +932,7 @@ origin.unwrap(), parent.unwrap(), attr.value());
                     }
 
                     for inline in inlined.iter() {
-                        if *parent == inline.id {
+                        if *parent == inline.origin {
                             iparams.get_mut(&inline.id)
                                 .unwrap()
                                 .push(TockilatorVariable {

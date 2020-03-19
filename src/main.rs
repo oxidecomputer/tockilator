@@ -77,7 +77,7 @@ fn dump_param(
             let mut sep = "";
 
             for v in vals {
-                print!("{}0x{:x}", sep, v);
+                print!("{}0x{:x} ({})", sep, v, param.id);
                 sep = ", ";
             }
             println!("");
@@ -129,10 +129,11 @@ fn flowtrace(
             ident = base + (i * 2) + sigil;
 
             println!(
-                "{} {:ident$} | {}",
+                "{} {:ident$} | {} ({})",
                 state.cycle,
                 "",
                 state.inlined[i].name,
+                state.inlined[i].id,
                 ident = ident,
             );
 
@@ -191,6 +192,8 @@ fn flowtrace(
         }
 
         if output && matches.is_present("allreg") {
+            println!("{} {:ident$} pc:{:8x}",
+                state.cycle, "", state.pc, ident = ident + sigil);
             regline!(ra, sp, gp, tp);
             regline!(t0, t1, t2, t3);
             regline!(t4, t5, t6);
