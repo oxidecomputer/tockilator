@@ -29,6 +29,7 @@ pub struct Tockilator {
     shortnames: BTreeMap<String, String>,   // demangled names from DWARF
     subprograms: BTreeMap<TockilatorGoff, String>,   // DWARF subprograms
     outlined: BTreeMap<u64, TockilatorGoff>, // outlined functions by address
+    inline: bool,                           // show inlined
 
     // Mapping from starting address to length, goff and origin
     inlined: BTreeMap<(u64, isize), (u64, TockilatorGoff, TockilatorGoff)>,
@@ -318,6 +319,13 @@ impl TockilatorState<'_> {
 }
 
 impl Tockilator {
+    pub fn inline(
+        &mut self,
+        inline: bool
+    ) {
+        self.inline = inline;
+    }
+
     pub fn loadobj(
         &mut self,
         obj: &str,
@@ -596,7 +604,10 @@ impl Tockilator {
 
         match (low, high, origin) {
             (Some(addr), Some(len), Some(origin)) => {
-                self.inlined.insert((addr, depth), (len, goff, origin));
+                if self.inline {
+                    self.inlined.insert((addr, depth), (len, goff, origin));
+                }
+
                 self.bygoff.insert(goff, (addr, len));
                 return Ok(());
             }
@@ -623,10 +634,12 @@ impl Tockilator {
                                 begin,
                                 end,
                             } => {
-                                self.inlined.insert(
-                                    (begin, depth),
-                                    (end - begin, goff, origin.unwrap()),
-                                );
+                                if self.inline {
+                                    self.inlined.insert(
+                                        (begin, depth),
+                                        (end - begin, goff, origin.unwrap()),
+                                    );
+                                }
                                 self.bygoff.insert(goff, (begin, end - begin));
                             }
                             _ => {}

@@ -94,6 +94,7 @@ fn flowtrace(
 ) -> Result<(), Box<dyn Error>> {
     let mut entry = true;
     let mut inlined: Vec<TockilatorGoff> = vec![];
+    let noparams = matches.is_present("no-params");
 
     tockilator.tracefile(file, |state| -> Result<(), Box<dyn Error>> {
         let f: &str = &format!("{:x}", state.pc);
@@ -114,8 +115,10 @@ fn flowtrace(
                 ident = ident,
             );
 
-            for param in state.params.iter() {
-                dump_param(state, param, ident)?;
+            if !noparams {
+                for param in state.params.iter() {
+                    dump_param(state, param, ident)?;
+                }
             }
 
             output = true;
@@ -138,8 +141,10 @@ fn flowtrace(
             );
 
             if let Some(params) = state.iparams.get(&state.inlined[i].id) {
-                for param in params.iter() {
-                    dump_param(state, param, ident)?;
+                if !noparams {
+                    for param in params.iter() {
+                        dump_param(state, param, ident)?;
+                    }
                 }
             }
 
@@ -238,6 +243,16 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .help("shows only function flow trace"),
         )
         .arg(
+            Arg::with_name("no-inline")
+                .short("I")
+                .help("Disable inline processing"),
+        )
+        .arg(
+            Arg::with_name("no-params")
+                .short("P")
+                .help("Disable parameter processing"),
+        )
+        .arg(
             Arg::with_name("allreg")
                 .short("a")
                 .help("shows all registers"),
@@ -251,6 +266,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         .get_matches();
 
     let mut tockilator = Tockilator::default();
+
+    if matches.is_present("no-inline") {
+        tockilator.inline(false);
+    } else {
+        tockilator.inline(true);
+    }
 
     if let Some(elfs) = matches.values_of("elf") {
         for elf in elfs {
