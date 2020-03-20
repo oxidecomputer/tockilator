@@ -19,7 +19,16 @@ fn dump(state: &TockilatorState) -> Result<(), Box<dyn Error>> {
         if offset == 0 {
             symbol = format!("{}", sym.demangled)
         } else {
-            symbol = format!("{}+0x{:x}", sym.demangled, offset)
+            if state.inlined.len() != 0 {
+                symbol = format!(
+                    "{}+0x{:x} ({})",
+                    sym.demangled,
+                    offset,
+                    state.inlined.last().unwrap().name
+                );
+            } else {
+                symbol = format!("{}+0x{:x}", sym.demangled, offset)
+            }
         }
     };
 
@@ -45,28 +54,71 @@ fn dump(state: &TockilatorState) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn dump_param(
+    state: &TockilatorState,
+    param: &TockilatorVariable,
+    ident: usize,
+) -> Result<(), Box<dyn Error>> {
+    let result = state.evaluate(param.expr)?;
+
+    print!(
+        "{} {:ident$}   ( {}=",
+        state.cycle,
+        "",
+        param.name,
+        ident = ident
+    );
+
+    match result {
+        None => {
+            println!("<unknown>");
+        }
+        Some(vals) => {
+            let mut sep = "";
+
+            for v in vals {
+                print!("{}0x{:x} ({})", sep, v, param.id);
+                sep = ", ";
+            }
+            println!("");
+        }
+    }
+
+    Ok(())
+}
+
 fn flowtrace(
     tockilator: &mut Tockilator,
     file: &str,
+    matches: &clap::ArgMatches,
 ) -> Result<(), Box<dyn Error>> {
-    let mut entry = false;
-    let mut inlined: Vec<usize> = vec![];
+    let mut entry = true;
+    let mut inlined: Vec<TockilatorGoff> = vec![];
 
     tockilator.tracefile(file, |state| -> Result<(), Box<dyn Error>> {
         let f: &str = &format!("{:x}", state.pc);
-        let base = state.stack.iter().fold(0, |sum, &val| sum + val.1);
+        let base = state.stack.iter().fold(0, |sum, &val| sum + val.1 + 2);
+        let mut ident = base;
+        let mut output = false;
+        let sigil = 2;
 
         if entry {
             println!(
-                "{} {:width$} -> {}",
+                "{} {:ident$}-> {}",
                 state.cycle,
                 "",
                 match state.symbol {
                     Some(sym) => sym.demangled.borrow(),
                     None => f,
                 },
-                width = (state.stack.len() * 2) + base
+                ident = ident,
             );
+
+            for param in state.params.iter() {
+                dump_param(state, param, ident)?;
+            }
+
+            output = true;
         }
 
         for i in 0..state.inlined.len() {
@@ -74,15 +126,24 @@ fn flowtrace(
                 continue;
             }
 
+            ident = base + (i * 2) + sigil;
+
             println!(
-                "{} {:width$}    {:iwidth$}| {}",
+                "{} {:ident$} | {} ({})",
                 state.cycle,
                 "",
-                "",
                 state.inlined[i].name,
-                width = (state.stack.len() * 2) + base,
-                iwidth = i * 2
+                state.inlined[i].id,
+                ident = ident,
             );
+
+            if let Some(params) = state.iparams.get(&state.inlined[i].id) {
+                for param in params.iter() {
+                    dump_param(state, param, ident)?;
+                }
+            }
+
+            output = true;
         }
 
         while let Some(_top) = inlined.pop() {
@@ -94,16 +155,52 @@ fn flowtrace(
         }
 
         if state.inst.op == rv_op::ret {
+            ident = base;
+
             println!(
-                "{} {:width$} <- {}",
+                "{} {:ident$}<- {}",
                 state.cycle,
                 "",
                 match state.symbol {
                     Some(sym) => sym.demangled.borrow(),
                     None => f,
                 },
-                width = (state.stack.len() * 2) + base
+                ident = ident,
             );
+            output = true;
+        }
+
+        macro_rules! regfmt {
+            () => { "" };
+            ($reg:tt) => {
+                format!("{:2}:{:8x}", stringify!($reg),
+                    state.regs[rv_ireg::$reg as usize])
+            };
+            ($reg:tt, $($rest:tt)*) => {
+                format!("{:2}:{:8x} {}", stringify!($reg),
+                    state.regs[rv_ireg::$reg as usize],
+                    regfmt!($($rest)*))
+            }
+        }
+
+        macro_rules! regline {
+            () => { println!("{}", state.cycle) };
+            ($($regs:tt)*) => {
+                println!("{} {:ident$} {}",
+                    state.cycle, "", regfmt!($($regs)*), ident = ident + sigil);
+            }
+        }
+
+        if output && matches.is_present("allreg") {
+            println!("{} {:ident$} pc:{:8x}",
+                state.cycle, "", state.pc, ident = ident + sigil);
+            regline!(ra, sp, gp, tp);
+            regline!(t0, t1, t2, t3);
+            regline!(t4, t5, t6);
+            regline!(s0, s1, s2, s3);
+            regline!(a0, a1, a2, a3);
+            regline!(a4, a5, a6, a7);
+            regline!();
         }
 
         match state.inst.op {
@@ -141,6 +238,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .help("shows only function flow trace"),
         )
         .arg(
+            Arg::with_name("allreg")
+                .short("a")
+                .help("shows all registers"),
+        )
+        .arg(
             Arg::with_name("dryrun")
                 .short("n")
                 .help("do not process trace file"),
@@ -170,7 +272,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let file = matches.value_of("tracefile").unwrap();
 
     if matches.is_present("flowtrace") {
-        flowtrace(&mut tockilator, file)?;
+        flowtrace(&mut tockilator, file, &matches)?;
     } else {
         tockilator.tracefile(file, dump)?;
     }
