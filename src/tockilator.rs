@@ -39,6 +39,9 @@ pub struct Tockilator {
     // Mapping from goff to name of parameter and goff of concrete parent
     parameters: BTreeMap<TockilatorGoff, (String, TockilatorGoff)>,
 
+    // Mapping from goff to file/line -- horrifically inefficient!
+    fileline: HashMap<TockilatorGoff, (String, u64)>,
+
     // Mapping from starting address + goff to length, origin and buffer
     expressions: BTreeMap<(u64, TockilatorGoff), (u64, TockilatorGoff, Vec<u8>)>,
     regs: [u32; TOCKILATOR_NREGS],          // current register state
@@ -658,31 +661,29 @@ impl Tockilator {
         // Iterate over the attributes in the DIE.
         let mut attrs = entry.attrs();
         while let Some(attr) = attrs.next()? {
-            match attr.name() {
-                gimli::constants::DW_AT_low_pc => {
-                    addr = match attr.value() {
-                        gimli::AttributeValue::Addr(addr) => Some(addr),
-                        _ => {
-                            return Err(err(format!(
-                                "unknown DW_AT_low_pc for {}", goff
-                            )));
-                        }
-                    }
+            match (attr.name(), attr.value()) {
+                (
+                    gimli::constants::DW_AT_low_pc,
+                    gimli::AttributeValue::Addr(value),
+                ) => {
+                    addr = Some(value);
                 }
-                gimli::constants::DW_AT_high_pc => {
-                    len = match attr.value() {
-                        gimli::AttributeValue::Udata(data) => Some(data),
-                        _ => {
-                            return Err(err(format!(
-                                "unknown DW_AT_high_pc for {}", goff
-                            )));
-                        }
-                    }
+                (
+                    gimli::constants::DW_AT_high_pc,
+                    gimli::AttributeValue::Udata(value),
+                ) => {
+                    len = Some(value);
                 }
-                gimli::constants::DW_AT_linkage_name => {
+                (
+                    gimli::constants::DW_AT_linkage_name,
+                    _
+                ) => {
                     linkage_name = dwarf_name(dwarf, attr.value());
                 }
-                gimli::constants::DW_AT_name => {
+                (
+                    gimli::constants::DW_AT_name,
+                    _
+                ) => {
                     name = dwarf_name(dwarf, attr.value());
                 }
                 _ => {}
@@ -707,6 +708,56 @@ impl Tockilator {
 
         if let (Some(addr), Some(len)) = (addr, len) {
             self.bygoff.insert(goff, (addr, len));
+        }
+
+        Ok(())
+    }
+
+    fn dwarf_fileline<R: gimli::Reader<Offset = usize>>(
+        &mut self,
+        dwarf: &gimli::Dwarf<R>,
+        unit: &gimli::Unit<R>,
+        entry: &gimli::DebuggingInformationEntry<R>,
+        goff: &TockilatorGoff,
+    ) -> Result<(), Box<dyn Error>> {
+        let mut attrs = entry.attrs();
+        let mut file = None;
+        let mut line = None;
+
+        while let Some(attr) = attrs.next()? {
+             match (attr.name(), attr.value()) {
+                (
+                    gimli::constants::DW_AT_decl_file,
+                    gimli::AttributeValue::FileIndex(value),
+                ) => {
+                    file = Some(value);
+                }
+                (
+                    gimli::constants::DW_AT_decl_line,
+                    gimli::AttributeValue::Udata(value),
+                ) => {
+                    line = Some(value);
+                }
+                _ => {}
+            }
+        }
+
+        if let (Some(file), Some(line)) = (file, line) {
+            let header = match unit.line_program {
+                Some(ref program) => program.header(),
+                None => return Ok(()),
+            };
+            let file = match header.file(file) {
+                Some(header) => header,
+                None => {
+                    return Err(err(format!("no header at {}", goff)));
+                }
+            };
+
+            let s = dwarf.attr_string(unit, file.path_name())?;
+            let d = s.to_string_lossy()?;
+
+            self.fileline.insert(*goff, (d.to_string(), line));
         }
 
         Ok(())
@@ -769,6 +820,8 @@ impl Tockilator {
                 } else {
                     stack[depth as usize] = goff;
                 }
+
+                self.dwarf_fileline(&dwarf, &unit, &entry, &goff)?;
 
                 match entry.tag() {
                     gimli::constants::DW_TAG_formal_parameter => {
