@@ -59,7 +59,7 @@ fn dump_param(
     param: &TockilatorVariable,
     ident: usize,
 ) -> Result<(), Box<dyn Error>> {
-    let result = state.evaluate(param.expr)?;
+    let result = state.evaluate(param)?;
 
     print!(
         "{} {:ident$}   ( {}=",

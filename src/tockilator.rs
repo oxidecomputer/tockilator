@@ -46,6 +46,7 @@ pub struct Tockilator {
     // Mapping from starting address + goff to length, origin and buffer
     expressions: BTreeMap<(u64, TockilatorGoff), (u64, TockilatorGoff, Vec<u8>)>,
     regs: [u32; TOCKILATOR_NREGS],          // current register state
+    mem: HashMap<u32, u8>,                  // current memory state
     stack: Vec<(u32, usize)>,               // current stack
 }
 
@@ -102,6 +103,8 @@ pub struct TockilatorState<'a> {
     pub inst: &'a rv_decode,
     /// Machine general purpose registers.
     pub regs: &'a [u32; TOCKILATOR_NREGS],
+    /// Memory
+    pub mem: &'a HashMap<u32, u8>,
     /// Instruction name as printed by Verilator.
     pub asm_op: &'a str,
     /// Instruction arguments as printed by Verilator.
@@ -250,11 +253,75 @@ fn parse_verilator_effects(
     Ok(Some((reg, val)))
 }
 
+fn parse_verilator_store(
+    effects: &str,
+) -> Result<Option<(u32, u32)>, Box<dyn Error>> {
+    let e: Vec<&str> = effects
+        .split(" ")
+        .filter(|eff| {
+            if *eff == "" {
+                false
+            } else if eff.find(":").is_some() {
+                true
+            } else {
+                assert!(eff.find("=").is_some());
+                false
+            }
+        })
+        .collect();
+
+    if e.len() == 0 {
+        return Ok(None);
+    }
+
+    let mut addr = None;
+    let mut contents = None;
+
+    for eff in e {
+        let eq = eff.find(":0x").ok_or_else(|| err("bad effect value"))?;
+        let val = u32::from_str_radix(&eff[eq + 1 + "0x".len()..], 0x10)?;
+
+        match (&eff[0..eq], addr, contents) {
+            ("PA", Some(_), _) => { return Err(err("multiple PA values")) },
+            ("PA", None, _) => { addr = Some(val) },
+            ("store", _, Some(_)) => { return Err(err("multiple store values")) },
+            ("store", _, None) => { contents = Some(val) }
+            (_, _, _) => {}
+        }
+    }
+
+    match (addr, contents) {
+        (None, None) => { Ok(None) }
+        (Some(addr), Some(contents)) => { Ok(Some((addr, contents))) }
+        (Some(_), None) => { Err(err("PA without store")) }
+        (None, Some(_)) => { Err(err("store without PA")) }
+    }
+}
+
 impl TockilatorState<'_> {
+    fn loadmem(&self, addr: u32, size: usize) -> Result<u32, Box<dyn Error>>
+    {
+        let mut bytes = [0, 0, 0, 0];
+
+        for i in 0..size {
+            let laddr = addr + i as u32;
+
+            bytes[i] = match self.mem.get(&laddr) {
+                Some(val) => { *val }
+                None => { return Err(err(
+                    format!("load from unknown address {:x}", laddr)
+                )); }
+            };
+        }
+
+        Ok(u32::from_le_bytes(bytes))
+    }
+
     pub fn evaluate(
         &self,
-        expr: &[u8]
+        var: &TockilatorVariable
     ) -> Result<Option<Vec<u32>>, Box<dyn Error>> {
+        let expr = var.expr;
         let bytes = gimli::EndianSlice::new(expr, gimli::LittleEndian);
 
         let encoding = gimli::Encoding {
@@ -287,9 +354,15 @@ impl TockilatorState<'_> {
                 } => {
                     return Ok(None);
                 }
+                gimli::EvaluationResult::RequiresFrameBase => {
+                    /*
+                     * Lord forgive me.
+                     */
+                    result = eval.resume_with_frame_base(self.regs[8].into())?;
+                }
                 _ => {
                     return Err(err(format!(
-                        "unrecognized eval bail: {:?}", result
+                        "unrecognized eval bail on {}: {:?}", var.id, result
                     )));
                 }
             }
@@ -306,6 +379,15 @@ impl TockilatorState<'_> {
 
                 gimli::Location::Value { value } => {
                     rval.push(value.to_u64(0xffff_ffff)? as u32);
+                }
+
+                gimli::Location::Address { address } => {
+                    println!("piece: {:?} {:?}", piece,
+                        self.loadmem(address as u32, 4));
+
+/*
+                    rval.push(self.loadmem(address as u32, 4)?);
+*/
                 }
 
                 gimli::Location::Empty => {}
@@ -763,6 +845,7 @@ impl Tockilator {
             let file = match header.file(file) {
                 Some(header) => header,
                 None => {
+                    println!("{:?}", header);
                     return Err(err(format!("no header at {}", goff)));
                 }
             };
@@ -834,7 +917,7 @@ impl Tockilator {
                     stack[depth as usize] = goff;
                 }
 
-                self.dwarf_fileline(&dwarf, &unit, &entry, &goff)?;
+                // self.dwarf_fileline(&dwarf, &unit, &entry, &goff)?;
 
                 match entry.tag() {
                     gimli::constants::DW_TAG_formal_parameter => {
@@ -860,6 +943,14 @@ impl Tockilator {
         }
 
         Ok(())
+    }
+
+    fn storemem(&mut self, addr: u32, contents: u32, size: usize) {
+        let bytes = contents.to_le_bytes();
+
+        for i in 0..size {
+            self.mem.insert(addr + i as u32, bytes[i]);
+        }
     }
 
     fn trace(
@@ -898,6 +989,29 @@ impl Tockilator {
              * Now decode the instruction.
              */
             let inst = decode_inst(rv_isa::rv32, pc as u64, ibin as u64);
+
+            let size = match inst.op {
+                rv_op::sb => 1,
+                rv_op::sh => 2,
+                rv_op::sw | rv_op::c_sw | rv_op::c_swsp => 4,
+                _ => 0
+            };
+
+            if size > 0 {
+                match parse_verilator_store(effects) {
+                    Ok(None) => {
+                        return Err(err(format!("missing PA/store on line {}",
+                            lineno)));
+                    }
+                    Err(e) => {
+                        return Err(err(format!("invalid PA/store on line {}: {}",
+                            lineno, e)));
+                    }
+                    Ok(Some(val)) => {
+                        self.storemem(val.0, val.1, size);
+                    }
+                }
+            }
 
             let mut symbol: Option<TockilatorSymbol> = None;
             let mut base = pc;
@@ -1018,11 +1132,14 @@ impl Tockilator {
                 asm_op,
                 asm_args,
                 regs: &self.regs,
+                mem: &self.mem,
                 effects: &effects,
                 stack: &self.stack,
                 inlined: inlined.as_slice(),
                 params: &params,
                 iparams: &iparams,
+            }).map_err(|e| {
+                err(format!("error on cycle {}: {}", cycle, e))
             })?;
 
             match inst.op {
@@ -1181,5 +1298,54 @@ mod tests {
     fn parse_effect_badval() {
         let res = parse_verilator_effects(r##"x=0x10000fb0"##);
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn parse_store_store() {
+        let res = parse_verilator_store(
+            r##"x20:0x10000dc0 PA:0x10000d18 store:0x10000dc0 load:0x00000000"##
+        );
+        assert_eq!(res.unwrap(), Some((0x10000d18, 0x10000dc0)));
+    }
+
+    #[test]
+    fn parse_store_multipa() {
+        let res = parse_verilator_store(
+            r##"PA:0x10000dc0 PA:0x10000d18 store:0x10000dc0 load:0x00000000"##
+        );
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn parse_store_multistore() {
+        let res = parse_verilator_store(
+            r##"PA:0x10000dc0 store:0x10000d18 store:0x10000dc0 load:0x00000000"##
+        );
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn parse_store_nostore() {
+        let res = parse_verilator_store(
+            r##"PA:0x10000dc0 load:0x00000000"##
+        );
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn parse_store_nopa() {
+        let res = parse_verilator_store(
+            r##"store:0x10000dc0 load:0x00000000"##
+        );
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn parse_store_none() {
+        let res = parse_verilator_store(
+            r##"x20:0x10000dc0 load:0x00000000"##
+        );
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), None);
     }
 }
