@@ -11,7 +11,7 @@ use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{stdout, BufRead, BufReader, Write};
 use std::str;
 
 use disc_v::*;
@@ -310,7 +310,9 @@ impl TockilatorState<'_> {
 
                 gimli::Location::Empty => {}
 
-                _ => { println!("piece: {:?}", piece); }
+                _ => {
+                    writeln!(stdout(), "piece: {:?}", piece)?;
+                }
             }
         }
 

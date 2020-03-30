@@ -4,6 +4,8 @@
 
 use std::borrow::Borrow;
 use std::error::Error;
+use std::io::{stderr, stdout, Write};
+use std::process::exit;
 
 use clap::{App, Arg};
 use disc_v::*;
@@ -32,7 +34,8 @@ fn dump(state: &TockilatorState) -> Result<(), Box<dyn Error>> {
         }
     };
 
-    println!(
+    writeln!(
+        stdout(),
         "{time:15} {cycle:10} {pc:08x} {hexinst:8} {asm:width$}{flow}{sym}  {fx}",
         time = state.time,
         cycle = state.cycle,
@@ -49,7 +52,7 @@ fn dump(state: &TockilatorState) -> Result<(), Box<dyn Error>> {
         sym = symbol,
         fx = state.effects,
         width = 30 + state.stack.len() * 2,
-    );
+    )?;
 
     Ok(())
 }
@@ -61,26 +64,27 @@ fn dump_param(
 ) -> Result<(), Box<dyn Error>> {
     let result = state.evaluate(param.expr)?;
 
-    print!(
+    write!(
+        stdout(),
         "{} {:ident$}   ( {}=",
         state.cycle,
         "",
         param.name,
         ident = ident
-    );
+    )?;
 
     match result {
         None => {
-            println!("<unknown>");
+            writeln!(stdout(), "<unknown>")?;
         }
         Some(vals) => {
             let mut sep = "";
 
             for v in vals {
-                print!("{}0x{:x} ({})", sep, v, param.id);
+                write!(stdout(), "{}0x{:x} ({})", sep, v, param.id)?;
                 sep = ", ";
             }
-            println!("");
+            writeln!(stdout(), "")?;
         }
     }
 
@@ -104,7 +108,8 @@ fn flowtrace(
         let sigil = 2;
 
         if entry {
-            println!(
+            writeln!(
+                stdout(),
                 "{} {:ident$}-> {}",
                 state.cycle,
                 "",
@@ -113,7 +118,7 @@ fn flowtrace(
                     None => f,
                 },
                 ident = ident,
-            );
+            )?;
 
             if !noparams {
                 for param in state.params.iter() {
@@ -131,14 +136,15 @@ fn flowtrace(
 
             ident = base + (i * 2) + sigil;
 
-            println!(
+            writeln!(
+                stdout(),
                 "{} {:ident$} | {} ({})",
                 state.cycle,
                 "",
                 state.inlined[i].name,
                 state.inlined[i].id,
                 ident = ident,
-            );
+            )?;
 
             if let Some(params) = state.iparams.get(&state.inlined[i].id) {
                 if !noparams {
@@ -162,7 +168,8 @@ fn flowtrace(
         if state.inst.op == rv_op::ret {
             ident = base;
 
-            println!(
+            writeln!(
+                stdout(),
                 "{} {:ident$}<- {}",
                 state.cycle,
                 "",
@@ -171,7 +178,7 @@ fn flowtrace(
                     None => f,
                 },
                 ident = ident,
-            );
+            )?;
             output = true;
         }
 
@@ -189,16 +196,22 @@ fn flowtrace(
         }
 
         macro_rules! regline {
-            () => { println!("{}", state.cycle) };
+            () => { writeln!(stdout(), "{}", state.cycle)? };
             ($($regs:tt)*) => {
-                println!("{} {:ident$} {}",
-                    state.cycle, "", regfmt!($($regs)*), ident = ident + sigil);
+                writeln!(stdout(), "{} {:ident$} {}",
+                    state.cycle, "", regfmt!($($regs)*), ident = ident + sigil)?;
             }
         }
 
         if output && matches.is_present("allreg") {
-            println!("{} {:ident$} pc:{:8x}",
-                state.cycle, "", state.pc, ident = ident + sigil);
+            writeln!(
+                stdout(),
+                "{} {:ident$} pc:{:8x}",
+                state.cycle,
+                "",
+                state.pc,
+                ident = ident + sigil
+            )?;
             regline!(ra, sp, gp, tp);
             regline!(t0, t1, t2, t3);
             regline!(t4, t5, t6);
@@ -222,7 +235,7 @@ fn flowtrace(
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let matches = App::new("tockilator")
+    let args = App::new("tockilator")
         .arg(
             Arg::with_name("elf")
                 .short("e")
@@ -263,7 +276,15 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .help("do not process trace file"),
         )
         .arg(Arg::with_name("tracefile").required(true).index(1))
-        .get_matches();
+        .get_matches_safe();
+
+    let matches = match args {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = write!(stderr(), "{}", e);
+            exit(0);
+        }
+    };
 
     let mut tockilator = Tockilator::default();
 
