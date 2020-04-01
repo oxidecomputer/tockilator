@@ -53,11 +53,11 @@ pub struct Tockilator {
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Copy, Clone)]
 ///
 /// An identifier that corresponds to a global offset within a particular DWARF
-/// object. This struction is opaque.
+/// object.
 ///
 pub struct TockilatorGoff {
-    object: u32,
-    goff: usize,
+    pub object: u32,
+    pub goff: usize,
 }
 
 #[derive(Debug)]
@@ -74,6 +74,7 @@ pub struct TockilatorSymbol<'a> {
     pub addr: u32,
     pub name: &'a str,
     pub demangled: Cow<'a, str>,
+    pub goff: Option<TockilatorGoff>,
 }
 
 #[derive(Debug)]
@@ -382,12 +383,7 @@ impl TockilatorState<'_> {
                 }
 
                 gimli::Location::Address { address } => {
-                    println!("piece: {:?} {:?}", piece,
-                        self.loadmem(address as u32, 4));
-
-/*
                     rval.push(self.loadmem(address as u32, 4)?);
-*/
                 }
 
                 gimli::Location::Empty => {}
@@ -942,6 +938,8 @@ impl Tockilator {
             }
         }
 
+        self.current += 1;
+
         Ok(())
     }
 
@@ -1038,7 +1036,11 @@ impl Tockilator {
                     symbol = Some(TockilatorSymbol {
                         addr: base,
                         name: &(sym.1).0,
-                        demangled,
+                        demangled: demangled,
+                        goff: match self.outlined.get(&(base as u64)) {
+                            Some(goff) => Some(*goff),
+                            None => None
+                        }
                     });
                 }
             }
