@@ -205,6 +205,8 @@ ELF files as input, it can follow code flow across privilege boundaries:
 214150                              -> memcpy
 ```
 
+![Example output](./example/libtock-rs/hello_world/example-output.png)
+
 Additional information can be found in this
 <a href="https://oxidizeconf.com/oxidize-1k/">Oxidize 1K</a> talk,
 <a href="https://www.slideshare.net/bcantrill/tockilator-deducing-tock-execution-flows-from-ibex-verilator-traces">Tockilator: Deducing Tock execution flows from Ibex Verilator traces</a> (<a href="https://www.youtube.com/watch?v=zPuELAzJyno&t=10534s">video</a>).
