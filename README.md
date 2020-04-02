@@ -205,6 +205,10 @@ ELF files as input, it can follow code flow across privilege boundaries:
 214150                              -> memcpy
 ```
 
+To better illustrate symbols coming from different objects, Tockilator will
+color them differently.  For example, here is the above output when rendered
+to a terminal:
+
 ![Example output](./example/libtock-rs/hello_world/example-output.png)
 
 Additional information can be found in this
