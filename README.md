@@ -1,6 +1,179 @@
-# tockilator
+# Tockilator: Deducing Tock execution flows from Ibex Verilator traces
 
 [![Build Status](https://travis-ci.org/oxidecomputer/tockilator.svg?branch=master)](https://travis-ci.org/oxidecomputer/tockilator)
+
+Tockilator is a Rust program that consumes the output from the tracer module of
+an <a href="https://github.com/lowRISC/ibex">Ibex RISC-V core</a> running under
+<a href="https://www.veripool.org/wiki/verilator">Verilator</a> along with an
+ELF file (or ELF files) that correspond to the running software (e.g., boot
+loader, operating system and application) and symbolically interprets the
+instruction trace to provide a view of execution flow.
+
+## Example output
+
+Here is an example of Tockilator output for 
+<a href="https://github.com/tock/libtock-rs">libtock-rs</a>
+running the <a href="https://github.com/tock/libtock-rs/blob/master/examples/hello_world.rs">hello_world</a> example:
+
+```
+~/tockilator/example/libtock-rs/hello_world$ ../../../target/release/tockilator -e ./hello_world.elf ./trace_core_00000000.log
+147794         => SYSCALL MEMOP operand=0 (brk) arg0=0x10003004
+165897         <= SYSCALL MEMOP operand=0 (brk) arg0=0x10003004
+165900         => SYSCALL MEMOP operand=10 (update-stack-start) arg0=0x10003400
+181174         <= SYSCALL MEMOP operand=10 (update-stack-start) arg0=0x10003400
+181177         => SYSCALL MEMOP operand=11 (update-heap-start) arg0=0x10003004
+195872         <= SYSCALL MEMOP operand=11 (update-heap-start) arg0=0x10003004
+195879         -> rust_start
+195894            | copy_nonoverlapping<u8> (GOFF 0x7ee8)
+195898            -> memcpy
+195913            <- memcpy
+195921            | write<u8> (GOFF 0x8006)
+195922            | add_usize (GOFF 0x7f69)
+195922              | checked_add (GOFF 0x7f94)
+195922                | overflowing_add (GOFF 0x7fb6)
+195923            | lt (GOFF 0x7fdd)
+195928            | write<u8> (GOFF 0x8006)
+195929            | add_usize (GOFF 0x7f69)
+195929              | checked_add (GOFF 0x7f94)
+195929                | overflowing_add (GOFF 0x7fb6)
+195930            | lt (GOFF 0x7fdd)
+195935            | write<u8> (GOFF 0x8006)
+195936            | add_usize (GOFF 0x7f69)
+195936              | checked_add (GOFF 0x7f94)
+195936                | overflowing_add (GOFF 0x7fb6)
+195937            | lt (GOFF 0x7fdd)
+195942            | write<u8> (GOFF 0x8006)
+195943            | add_usize (GOFF 0x7f69)
+195943              | checked_add (GOFF 0x7f94)
+195943                | overflowing_add (GOFF 0x7fb6)
+195944            | lt (GOFF 0x7fdd)
+195947            | set_brk (GOFF 0x8072)
+195947              | memop (GOFF 0x808b)
+195949                => SYSCALL MEMOP operand=0 (brk) arg0=0x10003404
+212924                <= SYSCALL MEMOP operand=0 (brk) arg0=0x10003404
+212927           -> main
+212936             -> start<core::result::Result<(), libtock::result::TockError>>
+212953                | block_on<core::result::Result<(), libtock::result::TockError>,async_support::executor::GeneratorFuture<generator-0>> (GOFF 0x3a4a)
+212953                  | poll<async_support::executor::GeneratorFuture<generator-0>> (GOFF 0x3a6c)
+212953                    | poll<generator-0> (GOFF 0x3a8f)
+212953                      | {{closure}} (GOFF 0x3ab7)
+212953                        | retrieve_drivers (GOFF 0x3acc)
+212960                        | create_console (GOFF 0x3adc)
+212966                    -> memset
+213489                    <- memset
+213492                | block_on<core::result::Result<(), libtock::result::TockError>,async_support::executor::GeneratorFuture<generator-0>> (GOFF 0x3a4a)
+213492                  | poll<async_support::executor::GeneratorFuture<generator-0>> (GOFF 0x3a6c)
+213492                    | poll<generator-0> (GOFF 0x3a8f)
+213492                      | {{closure}} (GOFF 0x3ab7)
+213492                        | create_console (GOFF 0x3adc)
+213493                        | write_fmt<libtock::console::Console> (GOFF 0x3afe)
+213515                    -> write
+213559                       | iter<core::fmt::ArgumentV1> (GOFF 0x2145)
+213559                         | add<core::fmt::ArgumentV1> (GOFF 0x2156)
+213559                           | offset<core::fmt::ArgumentV1> (GOFF 0x2167)
+213582                       | zip<core::slice::Iter<core::fmt::ArgumentV1>,core::slice::Iter<&str>> (GOFF 0x2311)
+213582                         | new<core::slice::Iter<core::fmt::ArgumentV1>,core::slice::Iter<&str>> (GOFF 0x2322)
+213582                           | new<core::slice::Iter<core::fmt::ArgumentV1>,core::slice::Iter<&str>> (GOFF 0x2333)
+213582                             | min<usize> (GOFF 0x2343)
+213582                               | min<usize> (GOFF 0x2353)
+213582                                 | min_by<usize,fn(&usize, &usize) -> core::cmp::Ordering> (GOFF 0x2364)
+213588                       | next<core::slice::Iter<core::fmt::ArgumentV1>,core::slice::Iter<&str>> (GOFF 0x237a)
+213588                         | next<core::slice::Iter<core::fmt::ArgumentV1>,core::slice::Iter<&str>> (GOFF 0x2387)
+213607                      -> write_str<libtock::console::Console>
+213666                         | copy_from_slice<u8> (GOFF 0x592b)
+213666                           | copy_nonoverlapping<u8> (GOFF 0x594d)
+213672                          -> memcpy
+213870                          <- memcpy
+213871                         | copy_from_slice<u8> (GOFF 0x592b)
+213871                           | copy_nonoverlapping<u8> (GOFF 0x594d)
+213872                         | allow (GOFF 0x575d)
+213872                           | allow (GOFF 0x579a)
+213877                             => SYSCALL ALLOW driver=1 subdriver=1 addr=0x10003370 len=17
+231428                             <= SYSCALL ALLOW driver=1 subdriver=1 addr=0x10003370 len=17
+231428                         | allow (GOFF 0x575d)
+231428                           | allow (GOFF 0x579a)
+231434                         | subscribe<libtock_core::callback::Identity0Consumer,closure-0> (GOFF 0x535c)
+231434                           | subscribe_fn (GOFF 0x5387)
+231434                             | subscribe (GOFF 0x53bb)
+231439                               => SYSCALL SUBSCRIBE driver=1 subdriver=1 callback=0x20030b40 data=0x100032c8
+247187                               <= SYSCALL SUBSCRIBE driver=1 subdriver=1 callback=0x20030b40 data=0x100032c8
+247187                         | subscribe<libtock_core::callback::Identity0Consumer,closure-0> (GOFF 0x535c)
+247187                           | subscribe_fn (GOFF 0x5387)
+247187                             | subscribe (GOFF 0x53bb)
+247188                         | command (GOFF 0x540f)
+247188                           | command (GOFF 0x5443)
+247193                             => SYSCALL COMMAND driver=1 subdriver=1 arg0=0x11 arg1=0x0
+263288                             <= SYSCALL COMMAND driver=1 subdriver=1 arg0=0x11 arg1=0x0
+263288                         | command (GOFF 0x540f)
+263288                           | command (GOFF 0x5443)
+263295                         | poll_with_tls_context<libtock::futures::WaitForValue<closure-0>> (GOFF 0x5559)
+263295                           | poll<libtock::futures::WaitForValue<closure-0>> (GOFF 0x556e)
+263295                             | poll<(),closure-0> (GOFF 0x559f)
+263304                         | yieldk (GOFF 0x55cb)
+263304                           | yieldk (GOFF 0x55db)
+263305                             => SYSCALL YIELD
+295020                         | consume<closure-0> (GOFF 0x5ca9)
+295023                           | {{closure}} (GOFF 0x5ccf)
+295023                             | set<bool> (GOFF 0x5cdf)
+295023                               | replace<bool> (GOFF 0x5cfc)
+295023                                 | replace<bool> (GOFF 0x5d23)
+295023                                   | swap<bool> (GOFF 0x5d41)
+295023                                     | swap_nonoverlapping_one<bool> (GOFF 0x5d59)
+295023                                       | copy_nonoverlapping<bool> (GOFF 0x5d71)
+295030                      <- libtock_core::syscalls::subscribe::c_callback::hf280be3ae7cea60e
+295041                       | poll_with_tls_context<libtock::futures::WaitForValue<closure-0>> (GOFF 0x5559)
+295041                         | poll<libtock::futures::WaitForValue<closure-0>> (GOFF 0x556e)
+295041                           | poll<(),closure-0> (GOFF 0x559f)
+295046                       | drop<libtock_core::callback::CallbackSubscription> (GOFF 0x55ed)
+295046                         | real_drop_in_place<libtock_core::callback::CallbackSubscription> (GOFF 0x55fd)
+295046                           | drop (GOFF 0x560e)
+295046                             | subscribe (GOFF 0x561d)
+295051                               => SYSCALL SUBSCRIBE driver=1 subdriver=1 callback=0x0 data=0x0
+310752                               <= SYSCALL SUBSCRIBE driver=1 subdriver=1 callback=0x0 data=0x0
+310752                  | drop<libtock_core::shared_memory::SharedMemory> (GOFF 0x5664)
+310752                    | real_drop_in_place<libtock_core::shared_memory::SharedMemory> (GOFF 0x5679)
+310752                      | drop (GOFF 0x568f)
+310752                        | allow (GOFF 0x56a3)
+310757                          => SYSCALL ALLOW driver=1 subdriver=1 addr=0x0 len=0
+328162                          <= SYSCALL ALLOW driver=1 subdriver=1 addr=0x0 len=0
+328162                  | index<u8,core::ops::range::RangeFrom<usize>> (GOFF 0x5854)
+328162                    | index<u8> (GOFF 0x5876)
+328162                      | index<u8> (GOFF 0x5899)
+328162                        | get_unchecked<u8> (GOFF 0x58bc)
+328162                          | add<u8> (GOFF 0x58df)
+328162                            | offset<u8> (GOFF 0x5902)
+328199               <- write_str
+328232             <- write
+328234              | block_on<core::result::Result<(), libtock::result::TockError>,async_support::executor::GeneratorFuture<generator-0>> (GOFF 0x3a4a)
+328234                | poll<async_support::executor::GeneratorFuture<generator-0>> (GOFF 0x3a6c)
+328234                  | poll<generator-0> (GOFF 0x3a8f)
+328234                    | {{closure}} (GOFF 0x3ab7)
+328234                      | write_fmt<libtock::console::Console> (GOFF 0x3afe)
+328246           <- start<core::result::Result<(), libtock::result::TockError>>
+328254         <- main
+328255          | yieldk (GOFF 0x80be)
+328255            | yieldk (GOFF 0x80ce)
+328256              => SYSCALL YIELD
+```
+
+## Getting started
+
+For an example of how to generate Verilator output for an Ibex core,
+see (for example) the documentation for 
+<a href="https://docs.opentitan.org/doc/ug/getting_started_verilator/">configuring Verilator for OpenTitan</a>.  
+
+## ELF binaries
+
+For anything written in Rust (or presumably, C++), it is important that
+<a href="xxx">DWARF information</a> be included in the ELF binary, as
+Tockilator will use this information to find
+(and display) inlined functions and parameter information.
+When building release builds in Rust, this information is not generated by
+default; to generate it, add the "debug = true" to the "
+
+Adding this information will result in a much larger binary, but it is stored in
+unloadable sections:  it does not at all affect what is loaded into the 
+embedded system.
 
 ```
 cargo run -- \
@@ -11,26 +184,3 @@ cargo run -- \
 
 
 Example output
-
-```
-...
-         316566     158278 200001ae d83a     c.swsp     x14,48(x2)                    |_start_trap+0x26  x2:0x10000d20 x14:0x00000000 PA:0x10000d50 store:0x00000000 load:0x00000000
-         316570     158280 200001b0 da3e     c.swsp     x15,52(x2)                    |_start_trap+0x28  x2:0x10000d20 x15:0x00000000 PA:0x10000d54 store:0x00000000 load:0x00000000
-         316574     158282 200001b2 dc42     c.swsp     x16,56(x2)                    |_start_trap+0x2a  x2:0x10000d20 x16:0x10001dbc PA:0x10000d58 store:0x10001dbc load:0x00000000
-         316578     158284 200001b4 de46     c.swsp     x17,60(x2)                    |_start_trap+0x2c  x2:0x10000d20 x17:0x10001ddf PA:0x10000d5c store:0x10001ddf load:0x00000000
-         316582     158286 200001b6 649050ef jal        x1,20005ffe                  ->_start_trap+0x2e  x1=0x200001ba
-         316584     158287 20005ffe 7179     c.addi16sp x2,-48                          |_start_trap_rust  x2:0x10000d20  x2=0x10000cf0
-         316588     158289 20006000 d606     c.swsp     x1,44(x2)                       |_start_trap_rust+0x2  x2:0x10000cf0  x1:0x200001ba PA:0x10000d1c store:0x200001ba load:0x00000000
-         316592     158291 20006002 d422     c.swsp     x8,40(x2)                       |_start_trap_rust+0x4  x2:0x10000cf0  x8:0x10000d70 PA:0x10000d18 store:0x10000d70 load:0x00000000
-         316594     158292 20006004 1800     c.addi4spn x8,x2,48                        |_start_trap_rust+0x6  x8=0x10000d20
-         316596     158293 20006006 34202573 csrrs      x10,mcause,x0                   |_start_trap_rust+0x8  x0:0x00000000 x10=0x8000000b
-         316600     158295 2000600a 00003097 auipc      x1,0x3                          |_start_trap_rust+0xc  x1=0x2000900a
-         316604     158297 2000600e 392080e7 jalr       x1,914(x1)                     ->_start_trap_rust+0x10  x1:0x2000900a  x1=0x20006012
-         316606     158298 2000939c 1141     c.addi     x2,-16                            |<tock_registers::registers::LocalRegisterCopy<u32,rv32i::csr::mcause::mcause::Register> as rv32i::csr::mcause::McauseHelpers>::cause::h8f489736de9e1a35  x2:0x10000cf0  x2=0x10000ce0
-         316610     158300 2000939e c606     c.swsp     x1,12(x2)                         |<tock_registers::registers::LocalRegisterCopy<u32,rv32i::csr::mcause::mcause::Register> as rv32i::csr::mcause::McauseHelpers>::cause::h8f489736de9e1a35+0x2  x2:0x10000ce0  x1:0x20006012 PA:0x10000cec store:0x20006012 load:0x00000000
-         316614     158302 200093a0 c422     c.swsp     x8,8(x2)                          |<tock_registers::registers::LocalRegisterCopy<u32,rv32i::csr::mcause::mcause::Register> as rv32i::csr::mcause::McauseHelpers>::cause::h8f489736de9e1a35+0x4  x2:0x10000ce0  x8:0x10000d20 PA:0x10000ce8 store:0x10000d20 load:0x00000000
-         316616     158303 200093a2 0800     c.addi4spn x8,x2,16                          |<tock_registers::registers::LocalRegisterCopy<u32,rv32i::csr::mcause::mcause::Register> as rv32i::csr::mcause::McauseHelpers>::cause::h8f489736de9e1a35+0x6  x8=0x10000cf0
-         316618     158304 200093a4 800005b7 lui        x11,0x80000                       |<tock_registers::registers::LocalRegisterCopy<u32,rv32i::csr::mcause::mcause::Register> as rv32i::csr::mcause::McauseHelpers>::cause::h8f489736de9e1a35+0x8  x11=0x80000000
-...
-```
-Those names are so long I almost wish I hadn't demangled them.
