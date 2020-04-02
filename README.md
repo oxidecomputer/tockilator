@@ -1,4 +1,6 @@
-# Tockilator: Deducing Tock execution flows from Ibex Verilator traces
+# Tockilator
+
+## Deducing Tock execution flows from Ibex Verilator traces
 
 [![Build Status](https://travis-ci.org/oxidecomputer/tockilator.svg?branch=master)](https://travis-ci.org/oxidecomputer/tockilator)
 
@@ -8,8 +10,6 @@ an <a href="https://github.com/lowRISC/ibex">Ibex RISC-V core</a> running under
 ELF file (or ELF files) that correspond to the running software (e.g., boot
 loader, operating system and application) and symbolically interprets the
 instruction trace to provide a view of execution flow.
-
-## Example output
 
 Here is an example of Tockilator output for 
 <a href="https://github.com/tock/libtock-rs">libtock-rs</a>
@@ -156,7 +156,56 @@ running the <a href="https://github.com/tock/libtock-rs/blob/master/examples/hel
 328256              => SYSCALL YIELD
 ```
 
-## Getting started
+As an example of going to more depth, Tockilator can also be given particular
+cycle ranges with the `-c` option, and be told to print parameters (such as
+they can be determined) with the `-p` option -- and if provided multiple
+ELF files as input, it can follow code flow across privilege boundaries:
+
+```
+~/tockilator/example/libtock-rs/hello_world$ ../../../target/release/tockilator -e ./hello_world.elf -e ./opentitan.elf -c 213607-214200 -p ./trace_core_00000000.log 
+213607                            -> write_str<libtock::console::Console>
+213666                               | copy_from_slice<u8> (GOFF 0x592b)
+213666                                 | copy_nonoverlapping<u8> (GOFF 0x594d)
+213672                                -> memcpy
+213870                                <- memcpy
+213871                               | copy_from_slice<u8> (GOFF 0x592b)
+213871                                 | copy_nonoverlapping<u8> (GOFF 0x594d)
+213872                               | allow (GOFF 0x575d)
+213872                                 | allow (GOFF 0x579a)
+213877                                   => SYSCALL ALLOW driver=1 subdriver=1 addr=0x10003370 len=17
+213980                               | switch_to_process (GOFF 0x81f4 in object 1)
+213980                                 ( state=0x10000c00 (GOFF 0x820b in object 1)
+214045                               -> from
+214045                                  ( csr_val=0x8 (GOFF 0x6fea0 in object 1)
+214054                                 -> from
+214054                                    ( val=0x8 (GOFF 0x6fe2d in object 1)
+214065                                    | from_reason (GOFF 0x6fe3c in object 1)
+214093                                 <- from
+214101                               <- from
+214102                               | switch_to_process (GOFF 0x81f4 in object 1)
+214102                                 ( state=0x10000d38 (GOFF 0x820b in object 1)
+214127                                 | arguments_to_syscall (GOFF 0x8222 in object 1)
+214127                                   ( r0=0x1 (GOFF 0x8238 in object 1)
+214127                                   ( r1=0x1 (GOFF 0x8241 in object 1)
+214127                                   ( r2=0x10003370 (GOFF 0x824a in object 1)
+214127                                   ( r3=0x11 (GOFF 0x8253 in object 1)
+214142                               | set<*const u8> (GOFF 0x8293 in object 1)
+214142                                 ( self=0x10004884 (GOFF 0x82a4 in object 1)
+214142                                 | replace<*const u8> (GOFF 0x82ad in object 1)
+214142                                   ( self=0x10004884 (GOFF 0x82be in object 1)
+214142                                   | replace<*const u8> (GOFF 0x82c7 in object 1)
+214142                                     ( dest=0x10004884 (GOFF 0x82d8 in object 1)
+214142                                     | swap<*const u8> (GOFF 0x82e6 in object 1)
+214142                                       ( x=0x10004884 (GOFF 0x82f7 in object 1)
+214142                                       | swap_nonoverlapping_one<*const u8> (GOFF 0x8305 in object 1)
+214142                                         ( x=0x10004884 (GOFF 0x8316 in object 1)
+214142                                         | copy_nonoverlapping<*const u8> (GOFF 0x8324 in object 1)
+214142                                           ( count=0x1 (GOFF 0x8343 in object 1)
+214142                                           ( dst=0x10004884 (GOFF 0x833a in object 1)
+214150                              -> memcpy
+```
+
+## Getting Verilator
 
 For an example of how to generate Verilator output for an Ibex core,
 see (for example) the documentation for 
