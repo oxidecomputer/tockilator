@@ -11,6 +11,10 @@ ELF file (or ELF files) that correspond to the running software (e.g., boot
 loader, operating system and application) and symbolically interprets the
 instruction trace to provide a view of execution flow.
 
+To learn more about the context for Tockilator, see this
+<a href="https://oxidizeconf.com/oxidize-1k/">Oxidize 1K</a> talk,
+<a href="https://www.slideshare.net/bcantrill/tockilator-deducing-tock-execution-flows-from-ibex-verilator-traces">Tockilator: Deducing Tock execution flows from Ibex Verilator traces</a> (<a href="https://www.youtube.com/watch?v=zPuELAzJyno&t=10534s">video</a>).
+
 Here is an example of Tockilator output for 
 <a href="https://github.com/tock/libtock-rs">libtock-rs</a>
 running the <a href="https://github.com/tock/libtock-rs/blob/master/examples/hello_world.rs">hello_world</a> example:
@@ -210,10 +214,6 @@ color them differently.  For example, here is the above output when rendered
 to a terminal:
 
 ![Example output](./example/libtock-rs/hello_world/example-output.png)
-
-Additional information can be found in this
-<a href="https://oxidizeconf.com/oxidize-1k/">Oxidize 1K</a> talk,
-<a href="https://www.slideshare.net/bcantrill/tockilator-deducing-tock-execution-flows-from-ibex-verilator-traces">Tockilator: Deducing Tock execution flows from Ibex Verilator traces</a> (<a href="https://www.youtube.com/watch?v=zPuELAzJyno&t=10534s">video</a>).
 
 ## Running Tockilator
 
