@@ -4,12 +4,34 @@
 
 use std::borrow::Borrow;
 use std::error::Error;
+use std::str::FromStr;
 
 use clap::{App, Arg};
 use disc_v::*;
+use colored::Colorize;
 
 mod tockilator;
 use tockilator::*;
+
+macro_rules! fatal {
+    ($fmt:expr) => ({
+        eprint!(concat!("tockilator: ", $fmt, "\n"));
+        ::std::process::exit(1);
+    });
+    ($fmt:expr, $($arg:tt)*) => ({
+        eprint!(concat!("tockilator: ", $fmt, "\n"), $($arg)*);
+        ::std::process::exit(1);
+    });
+}
+
+#[derive(Debug)]
+struct TockilatorConfig {
+    params: bool,
+    verbose: bool,
+    allreg: bool,
+    range: (Option<usize>, Option<usize>),
+    unresolved: bool,
+}
 
 fn dump(state: &TockilatorState) -> Result<(), Box<dyn Error>> {
     let mut symbol = format!("{:8x}", state.pc);
@@ -54,18 +76,34 @@ fn dump(state: &TockilatorState) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn color(
+    input: &str,
+    object: Option<u32>,
+    param: bool
+) -> colored::ColoredString {
+    match (object, param) {
+        (Some(0), false) => input.red().bold(),
+        (Some(0), true) => input.red(),
+        (Some(1), false) => input.magenta().bold(),
+        (Some(1), true) => input.blue(),
+        (Some(2), false) => input.cyan(),
+        (Some(2), true) => input.green(),
+        _ => input.normal(),
+    }
+}
+
 fn dump_param(
     state: &TockilatorState,
     param: &TockilatorVariable,
     ident: usize,
 ) -> Result<(), Box<dyn Error>> {
-    let result = state.evaluate(param.expr)?;
+    let result = state.evaluate(param)?;
 
     print!(
         "{} {:ident$}   ( {}=",
         state.cycle,
         "",
-        param.name,
+        color(param.name, Some(param.id.object), true),
         ident = ident
     );
 
@@ -77,7 +115,10 @@ fn dump_param(
             let mut sep = "";
 
             for v in vals {
-                print!("{}0x{:x} ({})", sep, v, param.id);
+                print!("{}", color(
+                    &format!("{}0x{:x} ({})", sep, v, param.id),
+                    Some(param.id.object), true
+                ));
                 sep = ", ";
             }
             println!("");
@@ -87,14 +128,80 @@ fn dump_param(
     Ok(())
 }
 
+fn dump_syscall(
+    state: &TockilatorState,
+) -> String {
+    let args = &state.regs[10..15];
+
+    let str = match args[0] {
+        0 => "YIELD".to_string(),
+        1 => format!(
+                "SUBSCRIBE driver={} subdriver={} callback=0x{:x} data=0x{:x}",
+                args[1], args[2], args[3], args[4]
+            ),
+        2 => format!(
+                "COMMAND driver={} subdriver={} arg0=0x{:x} arg1=0x{:x}",
+                args[1], args[2], args[3], args[4]
+            ),
+        3 => format!(
+                "ALLOW driver={} subdriver={} addr=0x{:x} len={}",
+                args[1], args[2], args[3], args[4]
+            ),
+        4 => format!(
+                "MEMOP operand={} ({}) arg0=0x{:x}",
+                args[1],
+                match args[1] {
+                    0 => "brk",
+                    1 => "sbrk",
+                    2 => "process-memory-start",
+                    3 => "process-memory-end",
+                    4 => "process-flash-start",
+                    5 => "process-flash-end",
+                    6 => "grant-region-begin",
+                    7 => "writeable-flash-regions",
+                    8 => "writeable-region-start",
+                    9 => "writeable-region-end",
+                    10 => "update-stack-start",
+                    11 => "update-heap-start",
+                    _ => "<unknown>"
+                },
+                args[2]
+            ),
+        _ => "UNKNOWN".to_string(),
+    };
+
+    format!("SYSCALL {}", str)
+}
+
+fn dump_symbol<'a>(
+    sym: &Option<&'a TockilatorSymbol<'a>>,
+    fallback: &str,
+) -> colored::ColoredString {
+    let object = match sym {
+        Some(sym) => match sym.goff {
+            Some(goff) => Some(goff.object),
+            None => None
+        },
+        None => None
+    };
+
+    color(match sym {
+        Some(sym) => sym.demangled.borrow(),
+        None => fallback,
+    }, object, false)
+}
+
 fn flowtrace(
     tockilator: &mut Tockilator,
     file: &str,
-    matches: &clap::ArgMatches,
+    config: &TockilatorConfig,
 ) -> Result<(), Box<dyn Error>> {
     let mut entry = true;
     let mut inlined: Vec<TockilatorGoff> = vec![];
-    let noparams = matches.is_present("no-params");
+
+    let mut mret = false;
+    let mut ecall: Option<(u32, usize)> = None;
+    let mut syscall: Option<String> = None;
 
     tockilator.tracefile(file, |state| -> Result<(), Box<dyn Error>> {
         let f: &str = &format!("{:x}", state.pc);
@@ -102,20 +209,24 @@ fn flowtrace(
         let mut ident = base;
         let mut output = false;
         let sigil = 2;
+        let mut skip = false;
 
-        if entry {
+        if let (Some(start), Some(end)) = config.range {
+            if state.cycle < start || state.cycle > end {
+                skip = true
+            }
+        }
+
+        if entry && !skip && (!state.symbol.is_none() || config.unresolved) {
             println!(
                 "{} {:ident$}-> {}",
                 state.cycle,
                 "",
-                match state.symbol {
-                    Some(sym) => sym.demangled.borrow(),
-                    None => f,
-                },
+                dump_symbol(&state.symbol, f),
                 ident = ident,
             );
 
-            if !noparams {
+            if config.params {
                 for param in state.params.iter() {
                     dump_param(state, param, ident)?;
                 }
@@ -124,24 +235,46 @@ fn flowtrace(
             output = true;
         }
 
+        if mret && !skip && ecall.is_some() &&
+          state.pc == ecall.unwrap().0 + 4 {
+            println!("{} {:ident$} <= {}",
+                state.cycle,
+                "",
+                syscall.as_ref().unwrap().white().bold(),
+                ident = ecall.unwrap().1,
+            );
+            output = true;
+        }
+
+        mret = state.inst.op == rv_op::mret;
+
         for i in 0..state.inlined.len() {
             if i < inlined.len() && inlined[i] == state.inlined[i].id {
+                continue;
+            }
+
+            if skip {
                 continue;
             }
 
             ident = base + (i * 2) + sigil;
 
             println!(
-                "{} {:ident$} | {} ({})",
+                "{} {:ident$} | {}",
                 state.cycle,
                 "",
-                state.inlined[i].name,
-                state.inlined[i].id,
+                color(
+                    &format!(
+                        "{} ({})",
+                        state.inlined[i].name,
+                        state.inlined[i].id
+                    ), Some(state.inlined[i].id.object), false
+                ),
                 ident = ident,
             );
 
             if let Some(params) = state.iparams.get(&state.inlined[i].id) {
-                if !noparams {
+                if config.params {
                     for param in params.iter() {
                         dump_param(state, param, ident)?;
                     }
@@ -149,6 +282,25 @@ fn flowtrace(
             }
 
             output = true;
+        }
+
+        if !skip && state.inst.op == rv_op::ecall {
+            syscall = Some(dump_syscall(&state));
+
+            if state.inlined.len() > 0 {
+                ident = base + (state.inlined.len() * 2) + sigil;
+            } else {
+                ident = base + 1;
+            }
+
+            println!("{} {:ident$} => {}",
+                state.cycle,
+                "",
+                syscall.as_ref().unwrap().white().bold(),
+                ident = ident,
+            );
+            output = true;
+            ecall = Some((state.pc, ident));
         }
 
         while let Some(_top) = inlined.pop() {
@@ -159,17 +311,28 @@ fn flowtrace(
             inlined.push(inline.id);
         }
 
-        if state.inst.op == rv_op::ret {
+        match state.inst.op {
+            rv_op::jalr | rv_op::c_jalr | rv_op::jal | rv_op::c_jal => {
+                entry = true;
+            }
+            _ => {
+                entry = false;
+            }
+        }
+
+        if skip {
+            return Ok(());
+        }
+
+        if state.inst.op == rv_op::ret &&
+          (!state.symbol.is_none() || config.unresolved) {
             ident = base;
 
             println!(
                 "{} {:ident$}<- {}",
                 state.cycle,
                 "",
-                match state.symbol {
-                    Some(sym) => sym.demangled.borrow(),
-                    None => f,
-                },
+                dump_symbol(&state.symbol, f),
                 ident = ident,
             );
             output = true;
@@ -196,7 +359,7 @@ fn flowtrace(
             }
         }
 
-        if output && matches.is_present("allreg") {
+        if output && config.allreg {
             println!("{} {:ident$} pc:{:8x}",
                 state.cycle, "", state.pc, ident = ident + sigil);
             regline!(ra, sp, gp, tp);
@@ -208,21 +371,21 @@ fn flowtrace(
             regline!();
         }
 
-        match state.inst.op {
-            rv_op::jalr | rv_op::c_jalr | rv_op::jal | rv_op::c_jal => {
-                entry = true;
-            }
-            _ => {
-                entry = false;
-            }
-        }
-
         Ok(())
     })
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let mut range = (None, None);
+
     let matches = App::new("tockilator")
+        .arg(
+            Arg::with_name("cycles")
+                .short("c")
+                .number_of_values(1)
+                .takes_value(true)
+                .value_name("CYCLES")
+        )
         .arg(
             Arg::with_name("elf")
                 .short("e")
@@ -238,9 +401,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .help("Disable DWARF processing"),
         )
         .arg(
-            Arg::with_name("flowtrace")
-                .short("F")
-                .help("shows only function flow trace"),
+            Arg::with_name("dump")
+                .short("d")
+                .help("dump minimally decorated output"),
         )
         .arg(
             Arg::with_name("no-inline")
@@ -248,19 +411,29 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .help("Disable inline processing"),
         )
         .arg(
-            Arg::with_name("no-params")
-                .short("P")
-                .help("Disable parameter processing"),
+            Arg::with_name("params")
+                .short("p")
+                .help("Show parameters"),
         )
         .arg(
-            Arg::with_name("allreg")
-                .short("a")
-                .help("shows all registers"),
+            Arg::with_name("registers")
+                .short("r")
+                .help("shows registers"),
         )
         .arg(
             Arg::with_name("dryrun")
                 .short("n")
                 .help("do not process trace file"),
+        )
+        .arg(
+            Arg::with_name("unresolved")
+                .short("u")
+                .help("display unresolved functions"),
+        )
+        .arg(
+            Arg::with_name("verbose")
+                .short("v")
+                .help("display verbose identifiers"),
         )
         .arg(Arg::with_name("tracefile").required(true).index(1))
         .get_matches();
@@ -292,10 +465,43 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let file = matches.value_of("tracefile").unwrap();
 
-    if matches.is_present("flowtrace") {
-        flowtrace(&mut tockilator, file, &matches)?;
-    } else {
+    if let Some(cycles) = matches.value_of("cycles") {
+        let pair: Vec<&str> = cycles.split("-").collect();
+        let start = usize::from_str(pair[0]).map_err(|_|
+            fatal!("cycle must be an integer")
+        ).unwrap();
+
+        if pair.len() > 2 {
+            fatal!("cycle range can only have two values");
+        }
+
+        if pair.len() > 1 {
+            let end = usize::from_str(pair[1]).map_err(|_|
+                fatal!("cycle range must be an integer")
+            ).unwrap();
+
+            if end < start {
+                fatal!("ending cycle must be greater than starting cycle")
+            }
+
+            range = (Some(start), Some(end))
+        } else {
+            range = (Some(start), Some(start))
+        }
+    }
+
+    let config = TockilatorConfig {
+        range: range,
+        verbose: false,
+        allreg: matches.is_present("registers"),
+        params: matches.is_present("params"),
+        unresolved: matches.is_present("unresolved"),
+    };
+
+    if matches.is_present("dump") {
         tockilator.tracefile(file, dump)?;
+    } else {
+        flowtrace(&mut tockilator, file, &config)?;
     }
 
     Ok(())
