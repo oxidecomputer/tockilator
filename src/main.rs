@@ -92,8 +92,19 @@ fn color(
     }
 }
 
+fn dump_id(
+    id: &Option<TockilatorGoff>,
+    config: &TockilatorConfig,
+) -> String {
+    match (id, config.verbose) {
+        (Some(id), true) => { format!(" ({})", id) }
+        _ => { "".to_string() }
+    }
+}
+
 fn dump_param(
     state: &TockilatorState,
+    config: &TockilatorConfig,
     param: &TockilatorVariable,
     ident: usize,
 ) -> Result<(), Box<dyn Error>> {
@@ -116,7 +127,10 @@ fn dump_param(
 
             for v in vals {
                 print!("{}", color(
-                    &format!("{}0x{:x} ({})", sep, v, param.id),
+                    &format!(
+                        "{}0x{:x}{}", sep, v,
+                        dump_id(&Some(param.id), config)
+                    ),
                     Some(param.id.object), true
                 ));
                 sep = ", ";
@@ -133,19 +147,32 @@ fn dump_syscall(
 ) -> String {
     let args = &state.regs[10..15];
 
+    let driver = match args[1] {
+        0x00000000 => "timer",
+        0x00000001 => "console",
+        0x00000002 => "leds",
+        0x00000003 => "buttons",
+        0x00000004 => "gpio",
+        0x00000005 => "adc",
+        0x00030000 => "simple_ble",
+        0x00040001 => "rng",
+        0x00060000 => "temperature",
+        _ => "<unknown>"
+    };
+
     let str = match args[0] {
         0 => "YIELD".to_string(),
         1 => format!(
-                "SUBSCRIBE driver={} subdriver={} callback=0x{:x} data=0x{:x}",
-                args[1], args[2], args[3], args[4]
+                "SUBSCRIBE driver={} ({}) subdriver={} cb=0x{:x} data=0x{:x}",
+                args[1], driver, args[2], args[3], args[4]
             ),
         2 => format!(
-                "COMMAND driver={} subdriver={} arg0=0x{:x} arg1=0x{:x}",
-                args[1], args[2], args[3], args[4]
+                "COMMAND driver={} ({}) subdriver={} arg0=0x{:x} arg1=0x{:x}",
+                args[1], driver, args[2], args[3], args[4]
             ),
         3 => format!(
-                "ALLOW driver={} subdriver={} addr=0x{:x} len={}",
-                args[1], args[2], args[3], args[4]
+                "ALLOW driver={} ({}) subdriver={} addr=0x{:x} len={}",
+                args[1], driver, args[2], args[3], args[4]
             ),
         4 => format!(
                 "MEMOP operand={} ({}) arg0=0x{:x}",
@@ -176,6 +203,7 @@ fn dump_syscall(
 fn dump_symbol<'a>(
     sym: &Option<&'a TockilatorSymbol<'a>>,
     fallback: &str,
+    config: &TockilatorConfig,
 ) -> colored::ColoredString {
     let object = match sym {
         Some(sym) => match sym.goff {
@@ -185,10 +213,17 @@ fn dump_symbol<'a>(
         None => None
     };
 
-    color(match sym {
-        Some(sym) => sym.demangled.borrow(),
-        None => fallback,
-    }, object, false)
+    match sym {
+        Some(sym) => {
+            let dem: &str = &sym.demangled.borrow();
+            color(
+                &format!("{}{}", dem, dump_id(&sym.goff, config)),
+                object,
+                false
+            )
+        },
+        None => color(fallback, object, false)
+    }
 }
 
 fn flowtrace(
@@ -202,10 +237,16 @@ fn flowtrace(
     let mut mret = false;
     let mut ecall: Option<(u32, usize)> = None;
     let mut syscall: Option<String> = None;
+    let mut stack: Vec<(u32, usize, bool)> = vec![];
 
     tockilator.tracefile(file, |state| -> Result<(), Box<dyn Error>> {
         let f: &str = &format!("{:x}", state.pc);
-        let base = state.stack.iter().fold(0, |sum, &val| sum + val.1 + 2);
+        let base = stack.iter().fold(0, |sum, &val| {
+            match val.2 {
+                false => sum,
+                true => sum + val.1 + 2
+            }
+        });
         let mut ident = base;
         let mut output = false;
         let sigil = 2;
@@ -222,13 +263,13 @@ fn flowtrace(
                 "{} {:ident$}-> {}",
                 state.cycle,
                 "",
-                dump_symbol(&state.symbol, f),
+                dump_symbol(&state.symbol, f, config),
                 ident = ident,
             );
 
             if config.params {
                 for param in state.params.iter() {
-                    dump_param(state, param, ident)?;
+                    dump_param(state, config, param, ident)?;
                 }
             }
 
@@ -265,9 +306,9 @@ fn flowtrace(
                 "",
                 color(
                     &format!(
-                        "{} ({})",
+                        "{}{}",
                         state.inlined[i].name,
-                        state.inlined[i].id
+                        dump_id(&Some(state.inlined[i].id), config),
                     ), Some(state.inlined[i].id.object), false
                 ),
                 ident = ident,
@@ -276,7 +317,7 @@ fn flowtrace(
             if let Some(params) = state.iparams.get(&state.inlined[i].id) {
                 if config.params {
                     for param in params.iter() {
-                        dump_param(state, param, ident)?;
+                        dump_param(state, config, param, ident)?;
                     }
                 }
             }
@@ -314,6 +355,15 @@ fn flowtrace(
         match state.inst.op {
             rv_op::jalr | rv_op::c_jalr | rv_op::jal | rv_op::c_jal => {
                 entry = true;
+                stack.push((
+                    state.pc,
+                    state.inlined.len(),
+                    !skip && (!state.symbol.is_none() || config.unresolved)
+                ));
+            }
+            rv_op::ret => {
+                entry = false;
+                stack.pop().or_else(|| panic!("underrun"));
             }
             _ => {
                 entry = false;
@@ -332,7 +382,7 @@ fn flowtrace(
                 "{} {:ident$}<- {}",
                 state.cycle,
                 "",
-                dump_symbol(&state.symbol, f),
+                dump_symbol(&state.symbol, f, config),
                 ident = ident,
             );
             output = true;
@@ -492,7 +542,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let config = TockilatorConfig {
         range: range,
-        verbose: false,
+        verbose: matches.is_present("verbose"),
         allreg: matches.is_present("registers"),
         params: matches.is_present("params"),
         unresolved: matches.is_present("unresolved"),
