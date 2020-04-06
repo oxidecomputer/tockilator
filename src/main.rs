@@ -250,13 +250,21 @@ fn flowtrace(
         let mut ident = base;
         let mut output = false;
         let sigil = 2;
-        let mut skip = false;
 
-        if let (Some(start), Some(end)) = config.range {
-            if state.cycle < start || state.cycle > end {
-                skip = true
+        let skip = match config.range {
+            (Some(start), Some(end)) => {
+                state.cycle < start || state.cycle > end
+            },
+            (Some(start), None) => {
+                state.cycle < start
+            },
+            (None, Some(end)) => {
+                state.cycle > end
+            },
+            (None, None) => {
+                false
             }
-        }
+        };
 
         if entry && !skip && (!state.symbol.is_none() || config.unresolved) {
             println!(
@@ -526,18 +534,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         if pair.len() > 1 {
-            let end = usize::from_str(pair[1]).map_err(|_|
-                fatal!("cycle range must be an integer")
-            ).unwrap();
+            if pair[1].len() == 0 {
+                range = (Some(start), None);
+            } else {
+                let end = usize::from_str(pair[1]).map_err(|_|
+                    fatal!("cycle range must be an integer")
+                ).unwrap();
 
-            if end < start {
-                fatal!("ending cycle must be greater than starting cycle")
+                if end < start {
+                    fatal!("ending cycle must be greater than starting cycle");
+                }
+
+                range = (Some(start), Some(end));
             }
-
-            range = (Some(start), Some(end))
         } else {
-            range = (Some(start), Some(start))
-        }
+            range = (Some(start), Some(start));
+        };
     }
 
     let config = TockilatorConfig {
